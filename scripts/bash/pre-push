@@ -1,0 +1,158 @@
+#!/bin/bash
+
+# Pre-push hook: Check SonarQube for BLOCKER/CRITICAL issues before push
+# Install: code-push init
+#      or: cp <this-file> .git/hooks/pre-push && chmod +x .git/hooks/pre-push
+
+set -e
+
+# ── Skip flags ────────────────────────────────────────────────────────────────
+if [ -n "$SKIP_SONAR" ]; then
+    exit 0
+fi
+
+if [ "${USE_SONAR:-1}" = "0" ]; then
+    exit 0
+fi
+
+# ── Config ────────────────────────────────────────────────────────────────────
+SONAR_HOST="${SONAR_HOST:-}"
+SONAR_TOKEN="${SONAR_TOKEN:-}"
+PROJECT_KEY="${SONAR_PROJECT_KEY:-}"
+TMPDIR="${TMPDIR:-/tmp}"
+ISSUES_FILE="$TMPDIR/sonar-issues-prepush.json"
+
+# ── Colors ────────────────────────────────────────────────────────────────────
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+BLUE='\033[0;34m'
+CYAN='\033[0;36m'
+MAGENTA='\033[0;35m'
+NC='\033[0m'
+
+# ── Skip if tokens missing ─────────────────────────────────────────────────────
+if [ -z "$SONAR_TOKEN" ] || [ -z "$PROJECT_KEY" ] || [ -z "$SONAR_HOST" ]; then
+    echo -e "${YELLOW}Skipping SonarQube check (SONAR_TOKEN, SONAR_PROJECT_KEY, or SONAR_HOST not set)${NC}"
+    exit 0
+fi
+
+echo ""
+echo -e "${CYAN}=== Pre-push SonarQube Check ===${NC}"
+echo ""
+echo -e "${BLUE}Checking SonarQube for BLOCKER/CRITICAL issues...${NC}"
+
+ISSUES_RESPONSE=$(curl -s -u "$SONAR_TOKEN:" \
+    "$SONAR_HOST/api/issues/search?componentKeys=$PROJECT_KEY&statuses=OPEN,CONFIRMED&severities=BLOCKER,CRITICAL&ps=50" \
+    2>/dev/null || echo "")
+
+if [ -z "$ISSUES_RESPONSE" ] || echo "$ISSUES_RESPONSE" | grep -q '"errors"'; then
+    echo -e "${YELLOW}Could not reach SonarQube — proceeding with push${NC}"
+    exit 0
+fi
+
+TOTAL_ISSUES=$(echo "$ISSUES_RESPONSE" | grep -o '"total":[0-9]*' | head -1 | cut -d':' -f2 || echo "0")
+BLOCKERS=$(echo  "$ISSUES_RESPONSE" | grep -o '"severity":"BLOCKER"'  | wc -l)
+CRITICALS=$(echo "$ISSUES_RESPONSE" | grep -o '"severity":"CRITICAL"' | wc -l)
+
+if [ "$TOTAL_ISSUES" = "0" ] || [ -z "$TOTAL_ISSUES" ]; then
+    echo -e "${GREEN}✓ No BLOCKER/CRITICAL issues. Proceeding with push.${NC}"
+    echo ""
+    exit 0
+fi
+
+echo "$ISSUES_RESPONSE" > "$ISSUES_FILE"
+echo ""
+echo -e "${YELLOW}Found issues:${NC}"
+[ "$BLOCKERS"  -gt 0 ] && echo -e "  ${RED}BLOCKER:  $BLOCKERS${NC}"
+[ "$CRITICALS" -gt 0 ] && echo -e "  ${RED}CRITICAL: $CRITICALS${NC}"
+echo ""
+
+# Parse and display issue details
+PYTHON_CMD=$(command -v python3 2>/dev/null || command -v python 2>/dev/null || echo "")
+if [ -n "$PYTHON_CMD" ]; then
+    "$PYTHON_CMD" -c "
+import json, sys
+try:
+    data = json.load(open('$ISSUES_FILE'))
+    for i, issue in enumerate(data['issues'][:10], 1):
+        f = issue.get('component','').split(':')[-1]
+        print(f'  {i}. [{issue[\"severity\"]}] {f}:{issue.get(\"line\",\"?\")}')
+        print(f'     {issue[\"message\"][:100]}')
+    if data['total'] > 10:
+        print(f'  ... and {data[\"total\"] - 10} more')
+except Exception as e:
+    sys.exit(0)
+" 2>/dev/null || true
+fi
+
+echo ""
+echo -e "${YELLOW}What would you like to do?${NC}"
+echo "  1) Fix with Claude Code (recommended)"
+echo "  2) Push anyway"
+echo "  3) Abort push"
+echo ""
+
+if [ -t 0 ]; then
+    read -p "Enter choice [1-3]: " choice
+else
+    echo "Non-interactive mode — aborting push. Use SKIP_SONAR=1 to bypass."
+    exit 1
+fi
+
+case $choice in
+    1)
+        echo ""
+        if ! command -v claude &> /dev/null; then
+            echo -e "${RED}Claude Code CLI not found${NC}"
+            echo "Install from: https://claude.ai/claude-code"
+            exit 1
+        fi
+
+        PROMPT="Fix these SonarQube issues:
+
+$("$PYTHON_CMD" -c "
+import json, sys
+try:
+    data = json.load(open('$ISSUES_FILE'))
+    for i, issue in enumerate(data['issues'], 1):
+        f = issue.get('component','').split(':')[-1]
+        print(f'{i}. File: {f}')
+        print(f'   Line: {issue.get(\"line\",\"N/A\")}')
+        print(f'   Severity: {issue[\"severity\"]}')
+        print(f'   Rule: {issue[\"rule\"]}')
+        print(f'   Message: {issue[\"message\"]}')
+        print()
+except Exception: pass
+" 2>/dev/null)
+
+Fix each issue following clean code standards. Keep changes minimal."
+
+        echo -e "${CYAN}╔═══════════════════════════════════════════════════╗${NC}"
+        echo -e "${CYAN}║         🤖 Claude Code — Live Fix Session         ║${NC}"
+        echo -e "${CYAN}╚═══════════════════════════════════════════════════╝${NC}"
+        echo ""
+        claude --print --dangerously-skip-permissions "$PROMPT"
+        echo ""
+        echo -e "${MAGENTA}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+
+        if ! git diff --quiet; then
+            echo ""
+            echo -e "${GREEN}Changes made. Review and commit:${NC}"
+            git diff --stat
+            echo ""
+            echo "  git add -A && git commit -m 'fix: resolve SonarQube issues' && git push"
+        fi
+
+        echo -e "${YELLOW}Push aborted — review fixes and push again.${NC}"
+        exit 1
+        ;;
+    2)
+        echo -e "${YELLOW}Proceeding with push (issues not fixed)${NC}"
+        exit 0
+        ;;
+    3|*)
+        echo -e "${RED}Push aborted${NC}"
+        exit 1
+        ;;
+esac
