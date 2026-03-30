@@ -57,6 +57,51 @@ ask_value() {
     export "$out_var"="$value"
 }
 
+# Branch selection menu
+# Usage: ask_branch OUTPUT_VAR "default_branch"
+ask_branch() {
+    local -r out_var="$1"
+    local -r default="$2"
+    local branches=("main" "master" "develop" "stage")
+    local choice value
+
+    echo -e "  ${BLUE}Select target branch for MRs/PRs:${NC}"
+    local i=1
+    for b in "${branches[@]}"; do
+        if [ "$b" = "$default" ]; then
+            echo -e "    ${CYAN}$i) $b${NC}  ${DIM}(recommended)${NC}"
+        else
+            echo -e "    $i) $b"
+        fi
+        i=$((i + 1))
+    done
+    echo -e "    $i) Other (enter manually)"
+    echo ""
+
+    while true; do
+        printf "  Choice [1-%s, default: %s]: " "$i" "$default"
+        read -r choice
+        if [ -z "$choice" ]; then
+            value="$default"
+            break
+        elif [[ "$choice" =~ ^[0-9]+$ ]] && [ "$choice" -ge 1 ] && [ "$choice" -lt "$i" ]; then
+            value="${branches[$((choice - 1))]}"
+            break
+        elif [ "$choice" = "$i" ]; then
+            printf "  Enter branch name: "
+            read -r value
+            [ -n "$value" ] && break
+            echo -e "  ${RED}Branch name cannot be empty.${NC}"
+        else
+            echo -e "  ${RED}Invalid choice. Enter a number between 1 and $i.${NC}"
+        fi
+    done
+
+    export "$out_var"="$value"
+    echo -e "  ${GREEN}✓ Target branch: ${CYAN}$value${NC}"
+    echo ""
+}
+
 # y/N question — returns 0 for yes, 1 for no
 ask_yes_no() {
     local label="$1"
@@ -113,14 +158,13 @@ show_var GIT_PROVIDER
 show_var GITLAB_TOKEN
 show_var GITHUB_TOKEN
 show_var GITLAB_HOST
-show_var GITLAB_PROJECT_PATH
 show_var GITHUB_HOST
-show_var GITHUB_PROJECT_PATH
 show_var USE_SONAR
 show_var SONAR_TOKEN
 show_var SONAR_HOST
-show_var SONAR_PROJECT_KEY
-show_var MAIN_BRANCH
+echo ""
+echo -e "  ${DIM}Project-specific settings (branch, project key, test runner) are${NC}"
+echo -e "  ${DIM}configured per-project via: devflow project-setup${NC}"
 echo ""
 
 read -r -p "  Start setup? (Y/n): " -n 1 REPLY
@@ -197,14 +241,8 @@ if [ "$NEW_GIT_PROVIDER" = "github" ]; then
     else
         ask_value NEW_PROJECT_PATH "Project path (org/repo)" "$AUTO_PROJECT_PATH"
     fi
-
-    DETECTED_MAIN=$(git symbolic-ref refs/remotes/origin/HEAD 2>/dev/null | sed 's|.*/||' || echo "")
-    NEW_MAIN_BRANCH="${MAIN_BRANCH:-}"
-    if [ -n "$NEW_MAIN_BRANCH" ]; then
-        echo -e "  ${GREEN}✓ MAIN_BRANCH already set: $NEW_MAIN_BRANCH${NC}"
-    else
-        ask_value NEW_MAIN_BRANCH "Main branch" "${DETECTED_MAIN:-main}"
-    fi
+    echo -e "  ${DIM}Project path is also auto-detected from git remote on each push.${NC}"
+    echo ""
 
     print_step "Step 3 — GitHub Personal Access Token"
     echo -e "  ${BLUE}Generate at:${NC} ${NEW_GITHUB_HOST}/settings/tokens/new"
@@ -234,20 +272,8 @@ else
         ask_value NEW_GITLAB_HOST "GitLab Host URL" "${AUTO_HOST:-https://gitlab.com}"
     fi
 
-    NEW_PROJECT_PATH="${GITLAB_PROJECT_PATH:-}"
-    if [ -n "$NEW_PROJECT_PATH" ]; then
-        echo -e "  ${GREEN}✓ GITLAB_PROJECT_PATH already set: $NEW_PROJECT_PATH${NC}"
-    else
-        ask_value NEW_PROJECT_PATH "Project path (org/repo)" "$AUTO_PROJECT_PATH"
-    fi
-
-    DETECTED_MAIN=$(git symbolic-ref refs/remotes/origin/HEAD 2>/dev/null | sed 's|.*/||' || echo "")
-    NEW_MAIN_BRANCH="${MAIN_BRANCH:-}"
-    if [ -n "$NEW_MAIN_BRANCH" ]; then
-        echo -e "  ${GREEN}✓ MAIN_BRANCH already set: $NEW_MAIN_BRANCH${NC}"
-    else
-        ask_value NEW_MAIN_BRANCH "Main branch" "${DETECTED_MAIN:-develop}"
-    fi
+    echo -e "  ${DIM}Project path is auto-detected from git remote on each push.${NC}"
+    echo ""
 
     print_step "Step 3 — GitLab Personal Access Token"
     echo -e "  ${BLUE}Generate at:${NC} ${NEW_GITLAB_HOST}/-/user_settings/personal_access_tokens"
@@ -365,24 +391,21 @@ add_if_new() {
     fi
 }
 
-add_if_new "GIT_PROVIDER"   "$NEW_GIT_PROVIDER"
-add_if_new "MAIN_BRANCH"    "$NEW_MAIN_BRANCH"
-add_if_new "USE_SONAR"      "$NEW_USE_SONAR"
+# Global-only vars — project-specific settings belong in .devflow.json
+add_if_new "GIT_PROVIDER" "$NEW_GIT_PROVIDER"
+add_if_new "USE_SONAR"    "$NEW_USE_SONAR"
 
 if [ "$NEW_GIT_PROVIDER" = "github" ]; then
-    add_if_new "GITHUB_HOST"         "${NEW_GITHUB_HOST:-}"
-    add_if_new "GITHUB_PROJECT_PATH" "$NEW_PROJECT_PATH"
-    add_if_new "GITHUB_TOKEN"        "$NEW_GIT_TOKEN"
+    add_if_new "GITHUB_HOST"  "${NEW_GITHUB_HOST:-}"
+    add_if_new "GITHUB_TOKEN" "$NEW_GIT_TOKEN"
 else
-    add_if_new "GITLAB_HOST"         "${NEW_GITLAB_HOST:-}"
-    add_if_new "GITLAB_PROJECT_PATH" "$NEW_PROJECT_PATH"
-    add_if_new "GITLAB_TOKEN"        "$NEW_GIT_TOKEN"
+    add_if_new "GITLAB_HOST"  "${NEW_GITLAB_HOST:-}"
+    add_if_new "GITLAB_TOKEN" "$NEW_GIT_TOKEN"
 fi
 
 if [ "$NEW_USE_SONAR" = "1" ]; then
-    add_if_new "SONAR_HOST"        "$NEW_SONAR_HOST"
-    add_if_new "SONAR_PROJECT_KEY" "$NEW_SONAR_PROJECT_KEY"
-    add_if_new "SONAR_TOKEN"       "$NEW_SONAR_TOKEN"
+    add_if_new "SONAR_HOST"  "$NEW_SONAR_HOST"
+    add_if_new "SONAR_TOKEN" "$NEW_SONAR_TOKEN"
 fi
 
 if [ ${#VALUES_TO_WRITE[@]} -eq 0 ]; then
@@ -435,9 +458,10 @@ echo -e "${GREEN}  ╚═══════════════════�
 echo ""
 echo -e "  Open a ${YELLOW}new terminal${NC} (or run ${CYAN}source $PROFILE_FILE${NC}) then:"
 echo ""
-echo -e "    ${CYAN}devflow check${NC}    — verify everything is configured"
-echo -e "    ${CYAN}devflow push${NC}     — run the full pipeline"
-echo -e "    ${CYAN}devflow init${NC}     — install the git pre-push hook"
+echo -e "    ${CYAN}devflow project-setup${NC}  — configure this project (branch, SonarQube key, tests)"
+echo -e "    ${CYAN}devflow check${NC}          — verify everything is configured"
+echo -e "    ${CYAN}devflow push${NC}           — run the full pipeline"
+echo -e "    ${CYAN}devflow init${NC}           — install the git pre-push hook"
 echo ""
 echo -e "  ${DIM}Security: never commit $PROFILE_FILE • rotate tokens every 6–12 months${NC}"
 echo ""

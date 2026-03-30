@@ -11,14 +11,15 @@ const BASH_DIR = path.join(PKG_ROOT, 'scripts', 'bash');
 const BAT_DIR  = path.join(PKG_ROOT, 'scripts', 'bat');
 
 const COMMANDS = {
-  setup:      { bash: 'setup-tokens.sh',        bat: 'setup-tokens.bat'    },
-  push:       { bash: 'code-push.sh',            bat: 'code-push.bat'       },
-  check:      { bash: 'check-env.sh',            bat: 'check-env.bat'       },
-  sonar:      { bash: 'sonar-fetch-issues.sh',   bat: null                  },
-  'debug-mr': { bash: 'debug-mr-create.sh',      bat: null                  },
-  'test-msg': { bash: 'test-commit-msg.sh',      bat: null                  },
-  init:       null,
-  help:       null,
+  setup:           { bash: 'setup-tokens.sh',        bat: 'setup-tokens.bat'    },
+  'project-setup': { bash: 'project-setup.sh',       bat: null                  },
+  push:            { bash: 'code-push.sh',            bat: 'code-push.bat'       },
+  check:           { bash: 'check-env.sh',            bat: 'check-env.bat'       },
+  sonar:           { bash: 'sonar-fetch-issues.sh',   bat: null                  },
+  'debug-mr':      { bash: 'debug-mr-create.sh',      bat: null                  },
+  'test-msg':      { bash: 'test-commit-msg.sh',      bat: null                  },
+  init:            null,
+  help:            null,
 };
 
 const HELP = `
@@ -28,16 +29,18 @@ const HELP = `
     devflow [command]
 
   COMMANDS
-    setup       First-time setup wizard (auto-detects from git remote)
-    push        Run the full push pipeline (default)
-    check       Verify environment is fully configured
-    sonar       Fetch current SonarQube issues
-    debug-mr    Debug GitLab MR creation
-    test-msg    Preview AI-generated commit message
-    init        Install the git pre-push hook in this project
+    setup           Global setup wizard — configure tokens & credentials
+    project-setup   Per-project setup — target branch, SonarQube, test runner
+    push            Run the full push pipeline (default)
+    check           Verify environment is fully configured
+    sonar           Fetch current SonarQube issues
+    debug-mr        Debug GitLab MR creation
+    test-msg        Preview AI-generated commit message
+    init            Install the git pre-push hook in this project
 
   REQUIRED ENV VARS
     GITLAB_TOKEN          GitLab personal access token
+    GITHUB_TOKEN          GitHub personal access token
     SONAR_TOKEN           SonarQube token
     GITLAB_HOST           GitLab instance URL   (e.g. https://gitlab.com)
     GITLAB_PROJECT_PATH   GitLab project path   (e.g. myorg/my-repo)
@@ -49,8 +52,17 @@ const HELP = `
     MAX_RETRIES     SonarQube fix attempts  (default: 3)
     SKIP_SONAR      Set to 1 to skip pre-push SonarQube check
 
+  PROJECT CONFIG (.devflow.json)
+    Run 'devflow project-setup' to create .devflow.json with:
+      mainBranch          Target branch for MRs/PRs
+      sonar.enabled       Whether SonarQube is active for this project
+      tests.runner        Detected test framework (jest, vitest, mocha, …)
+      tests.command       Command to run tests
+      tests.runBeforePush Run tests automatically before every push
+
   QUICK START
-    npx devflow setup    ← run this first in any new project
+    npx devflow setup           ← run once globally (tokens)
+    npx devflow project-setup   ← run per project (config)
     npx devflow push
 `;
 

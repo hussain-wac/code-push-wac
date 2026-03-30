@@ -54,6 +54,27 @@ else
     MAIN_BRANCH="${MAIN_BRANCH:-develop}"
 fi
 
+# ── Load per-project config from .devflow.json (if present) ──────────────────
+_DEVFLOW_JSON="${PROJECT_ROOT:-$(git rev-parse --show-toplevel 2>/dev/null || pwd)}/.devflow.json"
+_PYTHON_EARLY=$(command -v python3 2>/dev/null || command -v python 2>/dev/null || echo "")
+
+if [ -f "$_DEVFLOW_JSON" ] && [ -n "$_PYTHON_EARLY" ]; then
+    _cfg_branch=$("$_PYTHON_EARLY" -c "import json; d=json.load(open('$_DEVFLOW_JSON')); print(d.get('mainBranch',''))" 2>/dev/null || echo "")
+    _cfg_sonar=$("$_PYTHON_EARLY" -c "import json; d=json.load(open('$_DEVFLOW_JSON')); v=d.get('sonar',{}).get('enabled',''); print('1' if v==True else ('0' if v==False else ''))" 2>/dev/null || echo "")
+    _cfg_sonar_key=$("$_PYTHON_EARLY" -c "import json; d=json.load(open('$_DEVFLOW_JSON')); print(d.get('sonar',{}).get('projectKey',''))" 2>/dev/null || echo "")
+    _cfg_test_runner=$("$_PYTHON_EARLY" -c "import json; d=json.load(open('$_DEVFLOW_JSON')); print(d.get('tests',{}).get('runner',''))" 2>/dev/null || echo "")
+    _cfg_test_cmd=$("$_PYTHON_EARLY" -c "import json; d=json.load(open('$_DEVFLOW_JSON')); print(d.get('tests',{}).get('command',''))" 2>/dev/null || echo "")
+    _cfg_run_tests=$("$_PYTHON_EARLY" -c "import json; d=json.load(open('$_DEVFLOW_JSON')); v=d.get('tests',{}).get('runBeforePush',False); print('1' if v else '0')" 2>/dev/null || echo "0")
+
+    # Only apply if not already overridden by env or CLI
+    [ -n "$_cfg_branch" ]     && [ -z "${MAIN_BRANCH_OVERRIDE:-}" ] && MAIN_BRANCH="$_cfg_branch"
+    [ -n "$_cfg_sonar" ]      && [ -z "${USE_SONAR:-}" ]            && USE_SONAR="$_cfg_sonar"
+    [ -n "$_cfg_sonar_key" ]  && [ -z "${SONAR_PROJECT_KEY:-}" ]    && SONAR_PROJECT_KEY="$_cfg_sonar_key"
+    [ -n "$_cfg_test_runner" ] && TEST_RUNNER="${TEST_RUNNER:-$_cfg_test_runner}"
+    [ -n "$_cfg_test_cmd" ]    && TEST_COMMAND="${TEST_COMMAND:-$_cfg_test_cmd}"
+    RUN_TESTS_BEFORE_PUSH="${RUN_TESTS_BEFORE_PUSH:-$_cfg_run_tests}"
+fi
+
 # Backward-compat: if USE_SONAR not explicitly set, infer from whether vars exist
 if [ -z "$USE_SONAR" ]; then
     if [ -n "$SONAR_TOKEN" ] && [ -n "$SONAR_PROJECT_KEY" ] && [ -n "$SONAR_HOST" ]; then
@@ -702,38 +723,26 @@ _wait_gitlab_pipeline() {
     clear_animation_line
 
     local PIPELINE_ID="" PIPELINE_STATUS="" PIPELINE_RESPONSE=""
-    local CREATION_WAITED=0 CREATION_TIMEOUT=120
     local POLL_INTERVAL=10 MAX_WAIT=1800 WAITED=0
 
-    while [ -z "$PIPELINE_ID" ]; do
-        # Try SHA-specific lookup first
+    # Try SHA-specific lookup first
+    PIPELINE_RESPONSE=$(curl -s --header "PRIVATE-TOKEN: $GIT_TOKEN" \
+        "$GIT_HOST/api/v4/projects/$ENCODED_PROJECT/pipelines?ref=$ENCODED_BRANCH&sha=$CURRENT_SHA&per_page=1")
+    PIPELINE_ID=$(echo "$PIPELINE_RESPONSE" | grep -o '"id":[0-9]*' | head -1 | cut -d':' -f2)
+    PIPELINE_STATUS=$(echo "$PIPELINE_RESPONSE" | grep -o '"status":"[^"]*"' | head -1 | cut -d'"' -f4)
+
+    # Fallback: most recent pipeline on this branch (SHA may not be indexed yet)
+    if [ -z "$PIPELINE_ID" ]; then
         PIPELINE_RESPONSE=$(curl -s --header "PRIVATE-TOKEN: $GIT_TOKEN" \
-            "$GIT_HOST/api/v4/projects/$ENCODED_PROJECT/pipelines?ref=$ENCODED_BRANCH&sha=$CURRENT_SHA&per_page=1")
+            "$GIT_HOST/api/v4/projects/$ENCODED_PROJECT/pipelines?ref=$ENCODED_BRANCH&per_page=1")
         PIPELINE_ID=$(echo "$PIPELINE_RESPONSE" | grep -o '"id":[0-9]*' | head -1 | cut -d':' -f2)
         PIPELINE_STATUS=$(echo "$PIPELINE_RESPONSE" | grep -o '"status":"[^"]*"' | head -1 | cut -d'"' -f4)
+    fi
 
-        # Fallback: most recent pipeline on this branch (SHA may not be indexed yet)
-        if [ -z "$PIPELINE_ID" ]; then
-            PIPELINE_RESPONSE=$(curl -s --header "PRIVATE-TOKEN: $GIT_TOKEN" \
-                "$GIT_HOST/api/v4/projects/$ENCODED_PROJECT/pipelines?ref=$ENCODED_BRANCH&per_page=1")
-            PIPELINE_ID=$(echo "$PIPELINE_RESPONSE" | grep -o '"id":[0-9]*' | head -1 | cut -d':' -f2)
-            PIPELINE_STATUS=$(echo "$PIPELINE_RESPONSE" | grep -o '"status":"[^"]*"' | head -1 | cut -d'"' -f4)
-        fi
-
-        [ -n "$PIPELINE_ID" ] && break
-
-        if [ $CREATION_WAITED -ge $CREATION_TIMEOUT ]; then
-            clear_animation_line
-            echo -e "${YELLOW}⚠  No pipeline found. API response:${NC}"
-            echo "$PIPELINE_RESPONSE" | head -3
-            echo ""
-            echo -e "${YELLOW}  URL tried: $GIT_HOST/api/v4/projects/$ENCODED_PROJECT/pipelines?ref=$ENCODED_BRANCH&per_page=1${NC}"
-            return 0
-        fi
-        animated_wait $POLL_INTERVAL "Waiting for pipeline | ${CREATION_WAITED}s elapsed"
-        clear_animation_line
-        CREATION_WAITED=$((CREATION_WAITED + POLL_INTERVAL))
-    done
+    if [ -z "$PIPELINE_ID" ]; then
+        echo -e "${YELLOW}⚠  No pipeline found after waiting 10 seconds. Exiting.${NC}"
+        return 0
+    fi
 
     echo -e "${GREEN}✓ Pipeline found: #$PIPELINE_ID${NC}"
 
@@ -951,13 +960,48 @@ Co-Authored-By: Workflow Automation (Claude)"
 
 # ── Main workflow ─────────────────────────────────────────────────────────────
 main() {
+    # ── Argument parsing ───────────────────────────────────────────────────────
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            -b|--branch)
+                [ -z "$2" ] && { echo "Error: --branch requires a value (e.g. main, master, develop, stage)"; exit 1; }
+                MAIN_BRANCH="$2"; MAIN_BRANCH_OVERRIDE="$2"; shift 2 ;;
+            *) shift ;;
+        esac
+    done
+
     print_banner
     check_tokens
     check_agents
 
     echo -e "${BLUE}Provider:  ${CYAN}$GIT_PROVIDER${NC}"
+    echo -e "${BLUE}Target:    ${CYAN}$MAIN_BRANCH${NC}"
     echo -e "${BLUE}SonarQube: ${CYAN}$([ "$USE_SONAR" = "1" ] && echo "enabled" || echo "disabled")${NC}"
+    [ -n "${TEST_RUNNER:-}" ] && \
+        echo -e "${BLUE}Tests:     ${CYAN}$TEST_RUNNER${NC}$([ "${RUN_TESTS_BEFORE_PUSH:-0}" = "1" ] && echo " (runs before push)" || echo "")"
     echo ""
+
+    # ── Run tests before push (if configured in .devflow.json) ────────────────
+    if [ "${RUN_TESTS_BEFORE_PUSH:-0}" = "1" ] && [ -n "${TEST_COMMAND:-}" ]; then
+        print_step "🧪 Running tests before push"
+        echo -e "${BLUE}  Runner:  ${CYAN}${TEST_RUNNER:-unknown}${NC}"
+        echo -e "${BLUE}  Command: ${CYAN}$TEST_COMMAND${NC}"
+        echo ""
+        set +e
+        eval "$TEST_COMMAND"
+        TEST_EXIT=$?
+        set -e
+        if [ $TEST_EXIT -ne 0 ]; then
+            echo ""
+            echo -e "${RED}╔═══════════════════════════════════════════════════╗${NC}"
+            echo -e "${RED}║   ✗ Tests failed — push aborted                  ║${NC}"
+            echo -e "${RED}╚═══════════════════════════════════════════════════╝${NC}"
+            echo -e "${DIM}  Fix failing tests or set RUN_TESTS_BEFORE_PUSH=0 to skip.${NC}"
+            exit 1
+        fi
+        echo ""
+        echo -e "${GREEN}✓ All tests passed${NC}"
+    fi
 
     # check_git_status returns:
     #   0 = has local changes → stage + commit + push + create MR
