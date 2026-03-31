@@ -1,6 +1,6 @@
 {
   "name": "wac-devflow",
-  "version": "1.1.29",
+  "version": "1.1.30",
   "description": "Automated GitLab pipeline with SonarQube AI auto-fix and conventional commit messages",
   "bin": {
     "devflow": "bin/cli.js"

@@ -884,13 +884,18 @@ except: pass
 }
 
 fetch_sonar_issues() {
-    animated_wait 15 "Waiting for SonarQube to process"
-    clear_animation_line
+    if [ "$USE_EXISTING_ISSUES" = "1" ] || [ "$SKIP_FETCH" = "1" ]; then
+        echo -e "${BLUE}Using existing issues file: $SONAR_ISSUES_FILE${NC}"
+        [ ! -f "$SONAR_ISSUES_FILE" ] && { echo -e "${RED}No existing issues file found at $SONAR_ISSUES_FILE${NC}"; return 3; }
+    else
+        animated_wait 15 "Waiting for SonarQube to process"
+        clear_animation_line
 
-    rm -f "$SONAR_ISSUES_FILE" "$SONAR_PARSED_ISSUES_FILE"
+        rm -f "$SONAR_ISSUES_FILE" "$SONAR_PARSED_ISSUES_FILE"
 
-    if ! "$SCRIPT_DIR/sonar-fetch-issues.sh" "$SONAR_ISSUES_FILE"; then
-        return 3
+        if ! "$SCRIPT_DIR/sonar-fetch-issues.sh" "$SONAR_ISSUES_FILE"; then
+            return 3
+        fi
     fi
 
     [ ! -f "$SONAR_ISSUES_FILE" ] && { echo -e "${RED}Sonar issues file was not generated.${NC}"; return 3; }
@@ -1035,6 +1040,27 @@ main() {
             -b|--branch)
                 [ -z "$2" ] && { echo "Error: --branch requires a value (e.g. main, master, develop, stage)"; exit 1; }
                 MAIN_BRANCH="$2"; MAIN_BRANCH_OVERRIDE="$2"; shift 2 ;;
+            -f|--fix)
+                SKIP_FETCH=1; FIX_ONLY_MODE=1; shift ;;
+            -e|--existing)
+                USE_EXISTING_ISSUES=1; shift ;;
+            -h|--help)
+                echo "Usage: code-push.sh [options]"
+                echo ""
+                echo "Options:"
+                echo "  -b, --branch <name>    Target branch (default: main)"
+                echo "  -f, --fix              Fix-only mode: fetch and fix sonar issues without push"
+                echo "  -e, --existing         Use existing /tmp/sonar-issues.json instead of fetching"
+                echo "  -a, --agent            Run AI fix agent directly (standalone, no git workflow)"
+                echo "  -h, --help             Show this help message"
+                echo ""
+                echo "Environment variables:"
+                echo "  SONAR_PROJECT_KEY      SonarQube project key"
+                echo "  SONAR_HOST             SonarQube host URL"
+                echo "  SONAR_TOKEN            SonarQube API token"
+                exit 0 ;;
+            -a|--agent)
+                STANDALONE_FIX=1; shift ;;
             *) shift ;;
         esac
     done
@@ -1043,6 +1069,39 @@ main() {
     check_tokens
     check_agents
 
+    # ── Standalone Agent Mode: Just run AI fix without git workflow ────────────────
+    if [ "$STANDALONE_FIX" = "1" ]; then
+        print_step "🤖 Standalone AI Fix Mode"
+
+        local FETCH_STATUS=0
+        if fetch_sonar_issues; then FETCH_STATUS=0; else FETCH_STATUS=$?; fi
+
+        if [ "$FETCH_STATUS" -eq 1 ]; then
+            echo ""
+            echo -e "${GREEN}╔═══════════════════════════════════════════════════╗${NC}"
+            echo -e "${GREEN}║   ✓ All SonarQube issues resolved!               ║${NC}"
+            echo -e "${GREEN}╚═══════════════════════════════════════════════════╝${NC}"
+            exit 0
+        fi
+
+        if [ "$FETCH_STATUS" -eq 3 ]; then
+            echo -e "${RED}SonarQube query failed${NC}"; exit 1
+        fi
+
+        echo ""
+        echo -e "${BLUE}Running AI fix...${NC}"
+
+        if ! fix_with_agent; then
+            echo -e "${YELLOW}Auto-fix failed.${NC}"; exit 1
+        fi
+
+        echo ""
+        echo -e "${GREEN}✓ AI fix complete!${NC}"
+        echo "  Check the changes with: git diff"
+        exit 0
+    fi
+
+    # ── Normal mode: continue with git workflow ───────────────────────────────────
     echo -e "${BLUE}Provider:  ${CYAN}$GIT_PROVIDER${NC}"
     echo -e "${BLUE}Target:    ${CYAN}$MAIN_BRANCH${NC}"
     echo -e "${BLUE}SonarQube: ${CYAN}$([ "$USE_SONAR" = "1" ] && echo "enabled" || echo "disabled")${NC}"
@@ -1091,6 +1150,42 @@ main() {
     else
         # No changes, no push — just find the existing MR/PR for this branch
         check_or_create_mr
+    fi
+
+    # ── Fix-Only Mode: Just fix issues without pipeline ─────────────────────────
+    if [ "$FIX_ONLY_MODE" = "1" ]; then
+        print_step "🔧 Fix-Only Mode: Fetching and fixing SonarQube issues"
+
+        local FETCH_STATUS=0
+        if fetch_sonar_issues; then FETCH_STATUS=0; else FETCH_STATUS=$?; fi
+
+        if [ "$FETCH_STATUS" -eq 1 ]; then
+            echo ""
+            echo -e "${GREEN}╔═══════════════════════════════════════════════════╗${NC}"
+            echo -e "${GREEN}║   ✓ All SonarQube issues resolved!               ║${NC}"
+            echo -e "${GREEN}╚═══════════════════════════════════════════════════╝${NC}"
+            exit 0
+        fi
+
+        if [ "$FETCH_STATUS" -eq 3 ]; then
+            echo -e "${RED}SonarQube query failed${NC}"; exit 1
+        fi
+
+        echo ""
+        echo -e "${BLUE}Attempting to fix SonarQube issues...${NC}"
+
+        if ! fix_with_agent; then
+            echo -e "${YELLOW}Auto-fix failed. Manual intervention required.${NC}"; exit 1
+        fi
+
+        if ! commit_sonar_fixes; then
+            echo -e "${YELLOW}No fixes were made. Manual intervention may be needed.${NC}"; exit 1
+        fi
+
+        echo ""
+        echo -e "${GREEN}✓ Fixes committed to branch. Push with:${NC}"
+        echo "  SKIP_SONAR=1 git push"
+        exit 0
     fi
 
     # ── No SonarQube — just wait for CI to pass ────────────────────────────────
