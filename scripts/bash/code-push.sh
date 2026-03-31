@@ -79,6 +79,12 @@ if [ -f "$_DEVFLOW_JSON" ] && [ -n "$_PYTHON_EARLY" ]; then
     export RUN_TESTS_BEFORE_PUSH="${RUN_TESTS_BEFORE_PUSH:-$_cfg_run_tests}"
 fi
 
+# ── Load global config from ~/.devflow/config.sh ─────────────────────────────────
+_DEVFLOW_GLOBAL_CONFIG="${HOME}/.devflow/config.sh"
+if [ -f "$_DEVFLOW_GLOBAL_CONFIG" ]; then
+    set -a; source "$_DEVFLOW_GLOBAL_CONFIG"; set +a
+fi
+
 # Backward-compat: if USE_SONAR not explicitly set, infer from whether vars exist
 if [ -z "$USE_SONAR" ]; then
     if [ -n "$SONAR_TOKEN" ] && [ -n "$SONAR_PROJECT_KEY" ] && [ -n "$SONAR_HOST" ]; then
@@ -966,51 +972,68 @@ fix_with_agent() {
     local PROMPT
     PROMPT=$(build_fix_prompt)
 
-    if [ -z "$AI_CMD" ]; then
-        echo -e "${YELLOW}No AI CLI found. Skipping auto-fix.${NC}"
-        echo "  Install with npm:"
-        echo "    npm install -g @anthropic-ai/claude-code"
-        echo "    npm install -g @openai/codex"
-        echo "    npm install -g @google/gemini-cli"
-        return 1
+    local AI_ORDER=("claude" "codex" "gemini")
+    local DEFAULT_AI="$AI_CMD"
+    
+    if [ -n "$DEFAULT_AI" ]; then
+        AI_ORDER=("$DEFAULT_AI")
+        if [ "$DEFAULT_AI" = "claude" ]; then
+            AI_ORDER=("claude" "codex" "gemini")
+        elif [ "$DEFAULT_AI" = "codex" ]; then
+            AI_ORDER=("codex" "gemini" "claude")
+        elif [ "$DEFAULT_AI" = "gemini" ]; then
+            AI_ORDER=("gemini" "claude" "codex")
+        fi
     fi
 
-    local AGENT_LABEL="Claude Code"
-    [ "$AI_CMD" = "codex" ] && AGENT_LABEL="Codex"
-    [ "$AI_CMD" = "gemini" ] && AGENT_LABEL="Gemini"
+    local SUCCESS=0
+    for AI in "${AI_ORDER[@]}"; do
+        command -v "$AI" >/dev/null 2>&1 || continue
+        
+        local AGENT_LABEL="Claude Code"
+        [ "$AI" = "codex" ] && AGENT_LABEL="Codex"
+        [ "$AI" = "gemini" ] && AGENT_LABEL="Gemini"
+        
+        echo -e "${CYAN}╔═══════════════════════════════════════════════════╗${NC}"
+        echo -e "${CYAN}║       🤖 $AGENT_LABEL — Live Fix Session         ║${NC}"
+        echo -e "${CYAN}╚═══════════════════════════════════════════════════╝${NC}"
+        echo ""
 
-    echo -e "${CYAN}╔═══════════════════════════════════════════════════╗${NC}"
-    echo -e "${CYAN}║       🤖 $AGENT_LABEL — Live Fix Session         ║${NC}"
-    echo -e "${CYAN}╚═══════════════════════════════════════════════════╝${NC}"
-    echo ""
+        local OUTPUT_FILE
+        OUTPUT_FILE=$(mktemp)
 
-    local OUTPUT_FILE
-    OUTPUT_FILE=$(mktemp)
+        set +e
+        if [ "$AI" = "codex" ]; then
+            codex exec --full-auto "$PROMPT" 2>&1 | tee "$OUTPUT_FILE"
+        elif [ "$AI" = "gemini" ]; then
+            gemini -p "$PROMPT" 2>&1 | tee "$OUTPUT_FILE"
+        else
+            printf '%s\n' "$PROMPT" | claude --print --dangerously-skip-permissions 2>&1 | tee "$OUTPUT_FILE"
+        fi
+        local _exit=${PIPESTATUS[1]}
+        set -e
 
-    set +e
-    if [ "$AI_CMD" = "codex" ]; then
-        codex exec --full-auto "$PROMPT" 2>&1 | tee "$OUTPUT_FILE"
-    elif [ "$AI_CMD" = "gemini" ]; then
-        gemini -p "$PROMPT" 2>&1 | tee "$OUTPUT_FILE"
-    else
-        printf '%s\n' "$PROMPT" | claude --print --dangerously-skip-permissions 2>&1 | tee "$OUTPUT_FILE"
-    fi
-    local _exit=${PIPESTATUS[1]}
-    set -e
+        echo ""
+        echo -e "${MAGENTA}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
 
-    echo ""
-    echo -e "${MAGENTA}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+        local AI_OUTPUT
+        AI_OUTPUT=$(cat "$OUTPUT_FILE")
+        rm -f "$OUTPUT_FILE"
 
-    local AI_OUTPUT
-    AI_OUTPUT=$(cat "$OUTPUT_FILE")
-    rm -f "$OUTPUT_FILE"
+        if [ "$_exit" -eq 0 ] && ! echo "$AI_OUTPUT" | grep -qiE "(You've hit your limit|rate limit|quota exceeded|insufficient credits)"; then
+            echo -e "${GREEN}✓ $AGENT_LABEL finished processing${NC}"
+            SUCCESS=1
+            break
+        fi
 
-    if [ "$_exit" -eq 0 ] && ! echo "$AI_OUTPUT" | grep -qi "You've hit your limit"; then
-        echo -e "${GREEN}✓ $AGENT_LABEL finished processing${NC}"
+        echo -e "${YELLOW}$AGENT_LABEL failed or hit a limit. Trying next agent...${NC}"
+    done
+
+    if [ "$SUCCESS" -eq 1 ]; then
         return 0
     fi
-
-    echo -e "${YELLOW}$AGENT_LABEL failed or hit a limit.${NC}"
+    
+    echo -e "${RED}All AI agents failed or hit limits.${NC}"
     return 1
 }
 

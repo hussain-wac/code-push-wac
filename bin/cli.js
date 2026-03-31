@@ -19,6 +19,7 @@ const COMMANDS = {
   sonar:           { bash: 'sonar-fetch-issues.sh',   bat: null                  },
   'debug-mr':      { bash: 'debug-mr-create.sh',      bat: null                  },
   'test-msg':      { bash: 'test-commit-msg.sh',      bat: null                  },
+  'set-ai':        { bash: 'set-ai.sh',               bat: null                  },
   init:            null,
   help:            null,
 };
@@ -37,6 +38,7 @@ const HELP = `
     sonar           Fetch current SonarQube issues
     debug-mr        Debug GitLab MR creation
     test-msg        Preview AI-generated commit message
+    set-ai          Set default AI CLI (claude, codex, gemini)
     init            Install the git pre-push hook in this project
 
   REQUIRED ENV VARS
