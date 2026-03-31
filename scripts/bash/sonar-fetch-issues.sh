@@ -296,9 +296,5 @@ fi
 echo -e "${GREEN}Issues saved to: $OUTPUT_FILE${NC}"
 echo ""
 
-# Exit 1 if there are BLOCKER or CRITICAL issues (useful for pre-push hooks)
-if [ "$BLOCKERS" -gt 0 ] || [ "$CRITICALS" -gt 0 ]; then
-    exit 1
-fi
-
+# Exit 0 always if fetch was successful, so pipeline can proceed to auto-fix
 exit 0
