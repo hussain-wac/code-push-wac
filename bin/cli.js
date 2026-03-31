@@ -38,7 +38,7 @@ const HELP = `
     sonar           Fetch current SonarQube issues
     debug-mr        Debug GitLab MR creation
     test-msg        Preview AI-generated commit message
-    set-ai          Set default AI CLI (claude, codex, gemini)
+    set-ai          Set default AI CLI (interactive, with auto-install)
     init            Install the git pre-push hook in this project
 
   REQUIRED ENV VARS

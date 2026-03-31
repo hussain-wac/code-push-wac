@@ -1,64 +1,117 @@
 #!/bin/bash
-# Set default AI CLI for devflow
+# Set default AI CLI for devflow (interactive mode)
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 CONFIG_DIR="${HOME}/.devflow"
 CONFIG_FILE="${CONFIG_DIR}/config.sh"
 
 YELLOW='\033[1;33m'
 GREEN='\033[0;32m'
+BLUE='\033[0;34m'
+RED='\033[0;31m'
 NC='\033[0m'
 
 mkdir -p "$CONFIG_DIR"
 
-show_help() {
-    echo "Usage: devflow set-ai [claude|codex|gemini]"
+print_step() {
     echo ""
-    echo "Set the default AI CLI to use for fixing SonarQube issues."
-    echo ""
-    echo "Options:"
-    echo "  claude   Use Claude Code (default fallback: codex → gemini)"
-    echo "  codex    Use Codex (default fallback: gemini → claude)"
-    echo "  gemini   Use Gemini CLI (default fallback: claude → codex)"
-    echo ""
-    echo "If the selected AI hits a limit, devflow will automatically"
-    echo "try the next available AI in the fallback chain."
-    echo ""
-    echo "Examples:"
-    echo "  devflow set-ai claude"
-    echo "  devflow set-ai codex"
-    echo "  devflow set-ai gemini"
+    echo -e "${BLUE}━━━ $1 ━━━${NC}"
 }
 
-if [ "$1" = "-h" ] || [ "$1" = "--help" ]; then
-    show_help
-    exit 0
+check_ai_installed() {
+    command -v "$1" >/dev/null 2>&1
+}
+
+install_ai() {
+    local ai="$1"
+    echo ""
+    echo -e "${YELLOW}Installing ${ai}...${NC}"
+    
+    if ! command -v npm >/dev/null 2>&1; then
+        echo -e "${RED}✗ npm not found. Please install Node.js first.${NC}"
+        return 1
+    fi
+    
+    case "$ai" in
+        claude)
+            npm install -g @anthropic-ai/claude-code 2>&1
+            ;;
+        codex)
+            npm install -g @openai/codex 2>&1
+            ;;
+        gemini)
+            npm install -g @google/gemini-cli 2>&1
+            ;;
+    esac
+    
+    if check_ai_installed "$ai"; then
+        echo -e "${GREEN}✓ ${ai} installed successfully!${NC}"
+        return 0
+    else
+        echo -e "${RED}✗ Failed to install ${ai}${NC}"
+        return 1
+    fi
+}
+
+print_step "Select Default AI CLI"
+
+echo "Available AI CLIs:"
+echo "  [1] claude   - Claude Code (Anthropic)"
+echo "  [2] codex    - Codex (OpenAI)"  
+echo "  [3] gemini   - Gemini CLI (Google)"
+echo ""
+
+# Check what's installed
+for ai in claude codex gemini; do
+    if check_ai_installed "$ai"; then
+        echo -e "    ${GREEN}✓${NC} $ai is installed"
+    else
+        echo -e "    ${RED}✗${NC} $ai is NOT installed"
+    fi
+done
+echo ""
+
+# Check for existing default
+CURRENT=""
+if [ -f "$CONFIG_FILE" ]; then
+    CURRENT=$(grep "DEVFLOW_DEFAULT_AI_CLI" "$CONFIG_FILE" | cut -d"'" -f2 2>/dev/null || echo "")
+fi
+if [ -n "$CURRENT" ]; then
+    echo -e "Current default: ${GREEN}$CURRENT${NC}"
+    echo ""
 fi
 
-AI_choice="$1"
+read -p "Enter choice [1-3]: " -n 1 -r
+echo
 
-if [ -z "$AI_choice" ]; then
-    echo -e "${YELLOW}Error: Please specify an AI CLI${NC}"
-    show_help
-    exit 1
-fi
-
-case "$AI_choice" in
-    claude|codex|gemini)
-        ;;
-    *)
-        echo -e "${YELLOW}Error: Invalid AI choice: $AI_choice${NC}"
-        echo "Valid options: claude, codex, gemini"
-        exit 1
-        ;;
+case "$REPLY" in
+    1) AI_CHOICE="claude" ;;
+    2) AI_CHOICE="codex" ;;
+    3) AI_CHOICE="gemini" ;;
+    *) echo -e "${RED}Invalid choice.${NC}"
+       exit 1 ;;
 esac
 
-echo "export DEVFLOW_DEFAULT_AI_CLI='$AI_choice'" > "$CONFIG_FILE"
+# Check if selected AI is installed, offer to install if not
+if ! check_ai_installed "$AI_CHOICE"; then
+    echo ""
+    echo -e "${YELLOW}$AI_CHOICE is not installed.${NC}"
+    read -p "Install now? [Y/n]: " -n 1 -r
+    echo
+    if [[ $REPLY =~ ^[Yy]$ ]] || [ -z "$REPLY" ]; then
+        install_ai "$AI_CHOICE" || true
+    else
+        echo -e "${YELLOW}Skipping installation. Will try to use anyway.${NC}"
+    fi
+fi
 
-echo -e "${GREEN}✓ Default AI set to: $AI_choice${NC}"
+# Save config
+echo "export DEVFLOW_DEFAULT_AI_CLI='$AI_CHOICE'" > "$CONFIG_FILE"
+
 echo ""
-echo "Fallback order when $AI_choice hits a limit:"
-case "$AI_choice" in
+echo -e "${GREEN}✓ Default AI set to: $AI_CHOICE${NC}"
+echo ""
+echo "Fallback order when $AI_CHOICE hits a limit:"
+case "$AI_CHOICE" in
     claude)
         echo "  claude → codex → gemini"
         ;;
@@ -70,8 +123,6 @@ case "$AI_choice" in
         ;;
 esac
 
-if [ -n "$BASH_VERSION" ]; then
-    echo ""
-    echo -e "${YELLOW}To apply immediately in current shell:${NC}"
-    echo "  source ~/.devflow/config.sh"
-fi
+echo ""
+echo -e "${BLUE}To apply in current shell:${NC}"
+echo "  source ~/.devflow/config.sh"
