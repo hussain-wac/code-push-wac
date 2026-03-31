@@ -11,6 +11,22 @@ if [ -n "$SKIP_SONAR" ]; then
     exit 0
 fi
 
+# ── Load per-project config ───────────────────────────────────────────────────
+_PROJECT_ROOT="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
+_DEVFLOW_JSON="${_PROJECT_ROOT}/.devflow/devflow-project-setting.json"
+_LEGACY_DEVFLOW_JSON="${_PROJECT_ROOT}/.devflow.json"
+_PYTHON_EARLY=$(command -v python3 2>/dev/null || command -v python 2>/dev/null || echo "")
+
+[ -f "$_DEVFLOW_JSON" ] || _DEVFLOW_JSON="$_LEGACY_DEVFLOW_JSON"
+
+if [ -f "$_DEVFLOW_JSON" ] && [ -n "$_PYTHON_EARLY" ]; then
+    _cfg_sonar=$("$_PYTHON_EARLY" -c "import json; d=json.load(open('$_DEVFLOW_JSON')); v=d.get('sonar',{}).get('enabled',''); print('1' if v==True else ('0' if v==False else ''))" 2>/dev/null || echo "")
+    _cfg_sonar_key=$("$_PYTHON_EARLY" -c "import json; d=json.load(open('$_DEVFLOW_JSON')); print(d.get('sonar',{}).get('projectKey',''))" 2>/dev/null || echo "")
+
+    [ -n "$_cfg_sonar" ]      && [ -z "${USE_SONAR:-}" ]            && USE_SONAR="$_cfg_sonar"
+    [ -n "$_cfg_sonar_key" ]  && [ -z "${SONAR_PROJECT_KEY:-}" ]    && SONAR_PROJECT_KEY="$_cfg_sonar_key"
+fi
+
 if [ "${USE_SONAR:-1}" = "0" ]; then
     exit 0
 fi
@@ -30,6 +46,19 @@ BLUE='\033[0;34m'
 CYAN='\033[0;36m'
 MAGENTA='\033[0;35m'
 NC='\033[0m'
+DEFAULT_AI_CLI="${DEVFLOW_DEFAULT_AI_CLI:-}"
+
+pick_agent_cli() {
+    local candidate
+    for candidate in "$DEFAULT_AI_CLI" claude codex gemini; do
+        [ -z "$candidate" ] && continue
+        if command -v "$candidate" >/dev/null 2>&1; then
+            echo "$candidate"
+            return 0
+        fi
+    done
+    echo ""
+}
 
 # ── Skip if tokens missing ─────────────────────────────────────────────────────
 if [ -z "$SONAR_TOKEN" ] || [ -z "$PROJECT_KEY" ] || [ -z "$SONAR_HOST" ]; then
@@ -88,7 +117,7 @@ fi
 
 echo ""
 echo -e "${YELLOW}What would you like to do?${NC}"
-echo "  1) Fix with Claude Code (recommended)"
+echo "  1) Fix with AI CLI (recommended)"
 echo "  2) Push anyway"
 echo "  3) Abort push"
 echo ""
@@ -103,9 +132,13 @@ fi
 case $choice in
     1)
         echo ""
-        if ! command -v claude &> /dev/null; then
-            echo -e "${RED}Claude Code CLI not found${NC}"
-            echo "Install from: https://claude.ai/claude-code"
+        AGENT_CLI=$(pick_agent_cli)
+        if [ -z "$AGENT_CLI" ]; then
+            echo -e "${RED}No supported AI CLI found${NC}"
+            echo "Install one of:"
+            echo "  npm install -g @anthropic-ai/claude-code"
+            echo "  npm install -g @openai/codex"
+            echo "  npm install -g @google/gemini-cli"
             exit 1
         fi
 
@@ -128,11 +161,21 @@ except Exception: pass
 
 Fix each issue following clean code standards. Keep changes minimal."
 
+        AGENT_LABEL="Claude Code"
+        [ "$AGENT_CLI" = "codex" ] && AGENT_LABEL="Codex"
+        [ "$AGENT_CLI" = "gemini" ] && AGENT_LABEL="Gemini"
+
         echo -e "${CYAN}╔═══════════════════════════════════════════════════╗${NC}"
-        echo -e "${CYAN}║         🤖 Claude Code — Live Fix Session         ║${NC}"
+        echo -e "${CYAN}║         🤖 $AGENT_LABEL — Live Fix Session         ║${NC}"
         echo -e "${CYAN}╚═══════════════════════════════════════════════════╝${NC}"
         echo ""
-        claude --print --dangerously-skip-permissions "$PROMPT"
+        if [ "$AGENT_CLI" = "codex" ]; then
+            codex exec --full-auto "$PROMPT"
+        elif [ "$AGENT_CLI" = "gemini" ]; then
+            gemini -p "$PROMPT"
+        else
+            claude --print --dangerously-skip-permissions "$PROMPT"
+        fi
         echo ""
         echo -e "${MAGENTA}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
 

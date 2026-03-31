@@ -17,15 +17,28 @@ echo -e "${CYAN}║   AI-Powered Commit Message Generator — Test    ║${NC}"
 echo -e "${CYAN}╚══════════════════════════════════════════════════╝${NC}"
 echo ""
 
+DEFAULT_AI_CLI="${DEVFLOW_DEFAULT_AI_CLI:-}"
+AI_CMD=""
+for candidate in "$DEFAULT_AI_CLI" claude codex gemini; do
+    [ -z "$candidate" ] && continue
+    if command -v "$candidate" >/dev/null 2>&1; then
+        AI_CMD="$candidate"
+        break
+    fi
+done
+
 if git diff --quiet && git diff --staged --quiet; then
     echo -e "${YELLOW}No changes detected to analyze${NC}"
     echo "Stage some changes first:  git add <files>"
     exit 0
 fi
 
-if ! command -v claude &> /dev/null; then
-    echo -e "${RED}Error: Claude Code CLI not found${NC}"
-    echo "Install from: https://claude.ai/claude-code"
+if [ -z "$AI_CMD" ]; then
+    echo -e "${RED}Error: no supported AI CLI found${NC}"
+    echo "Install one of:"
+    echo "  npm install -g @anthropic-ai/claude-code"
+    echo "  npm install -g @openai/codex"
+    echo "  npm install -g @google/gemini-cli"
     exit 1
 fi
 
@@ -78,11 +91,17 @@ PROMPT="${PROMPT//DIFF_SUMMARY_PLACEHOLDER/$DIFF_SUMMARY}"
 PROMPT="${PROMPT//DIFF_CONTENT_PLACEHOLDER/$DIFF_CONTENT}"
 
 echo -e "${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
-echo -e "${CYAN}Generating with Claude Code (Haiku)...${NC}"
+echo -e "${CYAN}Generating with ${AI_CMD}...${NC}"
 echo -e "${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
 echo ""
 
-GENERATED_MSG=$(printf '%s\n' "$PROMPT" | claude --model haiku --print 2>&1)
+if [ "$AI_CMD" = "claude" ]; then
+    GENERATED_MSG=$(printf '%s\n' "$PROMPT" | claude --model haiku --print 2>&1)
+elif [ "$AI_CMD" = "codex" ]; then
+    GENERATED_MSG=$(codex exec "$PROMPT" 2>&1)
+else
+    GENERATED_MSG=$(gemini -p "$PROMPT" 2>&1)
+fi
 
 if [ $? -eq 0 ] && [ -n "$GENERATED_MSG" ]; then
     echo -e "${GREEN}✓ Generated commit message:${NC}"

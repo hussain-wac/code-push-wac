@@ -3,31 +3,33 @@ chcp 65001 >nul
 setlocal enabledelayedexpansion
 
 echo.
-echo  ╔═══════════════════════════════════════════════════╗
-echo  ║   Automated Code Push ^& SonarQube Pipeline      ║
-echo  ╚═══════════════════════════════════════════════════╝
+echo  ===================================================
+echo    Automated Code Push ^& SonarQube Pipeline
+echo  ===================================================
 echo.
 echo  NOTE: For the full experience with animations and
 echo        AI features, install Git Bash and re-run.
 echo        https://git-scm.com/download/win
 echo.
 
-:: ── Load .devflow.json if present ─────────────────────────────────────────────
+:: Load project settings if present
 set DEVFLOW_MAIN_BRANCH=
 set DEVFLOW_SONAR_KEY=
 set DEVFLOW_RUN_TESTS=0
 set DEVFLOW_TEST_CMD=
 
 for /f "tokens=*" %%p in ('git rev-parse --show-toplevel 2^>nul') do set PROJECT_ROOT=%%p
-if exist "%PROJECT_ROOT%\.devflow.json" (
-    echo  Loading .devflow.json...
-    for /f "tokens=*" %%v in ('powershell -NoProfile -Command "try { $d = Get-Content ''%PROJECT_ROOT%\.devflow.json'' | ConvertFrom-Json; Write-Output $d.mainBranch } catch { Write-Output '' }" 2^>nul') do set DEVFLOW_MAIN_BRANCH=%%v
-    for /f "tokens=*" %%v in ('powershell -NoProfile -Command "try { $d = Get-Content ''%PROJECT_ROOT%\.devflow.json'' | ConvertFrom-Json; Write-Output $d.sonar.projectKey } catch { Write-Output '' }" 2^>nul') do set DEVFLOW_SONAR_KEY=%%v
-    for /f "tokens=*" %%v in ('powershell -NoProfile -Command "try { $d = Get-Content ''%PROJECT_ROOT%\.devflow.json'' | ConvertFrom-Json; if ($d.tests.runBeforePush) { Write-Output 1 } else { Write-Output 0 } } catch { Write-Output 0 }" 2^>nul') do set DEVFLOW_RUN_TESTS=%%v
-    for /f "tokens=*" %%v in ('powershell -NoProfile -Command "try { $d = Get-Content ''%PROJECT_ROOT%\.devflow.json'' | ConvertFrom-Json; Write-Output $d.tests.command } catch { Write-Output '' }" 2^>nul') do set DEVFLOW_TEST_CMD=%%v
+set DEVFLOW_CONFIG=%PROJECT_ROOT%\.devflow\devflow-project-setting.json
+if not exist "%DEVFLOW_CONFIG%" set DEVFLOW_CONFIG=%PROJECT_ROOT%\.devflow.json
+if exist "%DEVFLOW_CONFIG%" (
+    echo  Loading project settings...
+    for /f "tokens=*" %%v in ('powershell -NoProfile -Command "try { $d = Get-Content ''%DEVFLOW_CONFIG%'' | ConvertFrom-Json; Write-Output $d.mainBranch } catch { Write-Output '' }" 2^>nul') do set DEVFLOW_MAIN_BRANCH=%%v
+    for /f "tokens=*" %%v in ('powershell -NoProfile -Command "try { $d = Get-Content ''%DEVFLOW_CONFIG%'' | ConvertFrom-Json; Write-Output $d.sonar.projectKey } catch { Write-Output '' }" 2^>nul') do set DEVFLOW_SONAR_KEY=%%v
+    for /f "tokens=*" %%v in ('powershell -NoProfile -Command "try { $d = Get-Content ''%DEVFLOW_CONFIG%'' | ConvertFrom-Json; if ($d.tests.runBeforePush) { Write-Output 1 } else { Write-Output 0 } } catch { Write-Output 0 }" 2^>nul') do set DEVFLOW_RUN_TESTS=%%v
+    for /f "tokens=*" %%v in ('powershell -NoProfile -Command "try { $d = Get-Content ''%DEVFLOW_CONFIG%'' | ConvertFrom-Json; Write-Output $d.tests.command } catch { Write-Output '' }" 2^>nul') do set DEVFLOW_TEST_CMD=%%v
 )
 
-:: ── Auto-detect project path from git remote ──────────────────────────────────
+:: Auto-detect project path from git remote
 set AUTO_PROJECT_PATH=
 for /f "tokens=*" %%r in ('git remote get-url origin 2^>nul') do set REMOTE_URL=%%r
 
@@ -41,7 +43,7 @@ if defined REMOTE_URL (
     )
 )
 
-:: ── Resolve config — env vars take priority over .devflow.json ────────────────
+:: Resolve config - env vars take priority over project settings
 if not defined GITLAB_HOST  set GITLAB_HOST=https://gitlab.com
 if not defined MAIN_BRANCH  (
     if defined DEVFLOW_MAIN_BRANCH (set MAIN_BRANCH=!DEVFLOW_MAIN_BRANCH!) else (set MAIN_BRANCH=develop)
@@ -59,7 +61,7 @@ if defined GITLAB_PROJECT_PATH (
     exit /b 1
 )
 
-:: Resolve SonarQube project key: env var > .devflow.json
+:: Resolve SonarQube project key: env var > project settings
 if defined SONAR_PROJECT_KEY (
     set RESOLVED_SONAR_KEY=%SONAR_PROJECT_KEY%
 ) else if defined DEVFLOW_SONAR_KEY (
@@ -68,7 +70,7 @@ if defined SONAR_PROJECT_KEY (
     set RESOLVED_SONAR_KEY=
 )
 
-:: ── Validate required env vars ────────────────────────────────────────────────
+:: Validate required env vars
 if not defined GITLAB_TOKEN (
     echo [ERROR] GITLAB_TOKEN not set
     echo         Run: devflow setup
@@ -80,15 +82,15 @@ echo  Project:   %RESOLVED_PROJECT_PATH%
 echo  Target:    %MAIN_BRANCH%
 echo.
 
-:: ── Run tests before push (if configured) ─────────────────────────────────────
+:: Run tests before push (if configured)
 if "!DEVFLOW_RUN_TESTS!"=="1" (
     if defined DEVFLOW_TEST_CMD (
-        echo ━━ Tests ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+        echo ---- Tests ---------------------------------------
         echo Running: !DEVFLOW_TEST_CMD!
         cmd /c "!DEVFLOW_TEST_CMD!"
         if !ERRORLEVEL! neq 0 (
             echo [ERROR] Tests failed. Push aborted.
-            echo         Fix failing tests or set runBeforePush to false in .devflow.json
+            echo         Fix failing tests or set runBeforePush to false in .devflow\devflow-project-setting.json
             exit /b 1
         )
         echo [OK] Tests passed.
@@ -96,8 +98,8 @@ if "!DEVFLOW_RUN_TESTS!"=="1" (
     )
 )
 
-:: ── Step 1: Git status ─────────────────────────────────────────────────────────
-echo ━━ Step 1: Git Status ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+:: Step 1: Git status
+echo ---- Step 1: Git Status --------------------------------
 for /f "tokens=*" %%b in ('git rev-parse --abbrev-ref HEAD 2^>nul') do set CURRENT_BRANCH=%%b
 echo Current branch: %CURRENT_BRANCH%
 echo.
@@ -131,8 +133,8 @@ echo [OK] Changes detected:
 git status --short
 echo.
 
-:: ── Step 2: Commit ────────────────────────────────────────────────────────────
-echo ━━ Step 2: Staging ^& Committing ━━━━━━━━━━━━━━━━━━━
+:: Step 2: Commit
+echo ---- Step 2: Staging ^& Committing --------------------
 git add -A
 
 echo.
@@ -143,16 +145,34 @@ git commit -m "%COMMIT_MSG%"
 echo [OK] Changes committed.
 echo.
 
-:: ── Step 3: Push ──────────────────────────────────────────────────────────────
+:: Step 3: Sync with target branch
+:sync_target
+echo ---- Step 3: Syncing with Target Branch ----------------
+echo Fetching latest origin/%MAIN_BRANCH%...
+git fetch origin %MAIN_BRANCH% || (
+    echo [ERROR] Failed to fetch origin/%MAIN_BRANCH%
+    exit /b 1
+)
+echo Merging origin/%MAIN_BRANCH% into %CURRENT_BRANCH%...
+git merge --no-edit origin/%MAIN_BRANCH%
+if errorlevel 1 (
+    echo [ERROR] Merge conflict detected while syncing with origin/%MAIN_BRANCH%.
+    echo         Resolve the conflicts manually, then run devflow push again.
+    exit /b 1
+)
+echo [OK] Branch synced with origin/%MAIN_BRANCH%.
+echo.
+
+:: Step 4: Push
 :push
-echo ━━ Step 3: Pushing to Remote ━━━━━━━━━━━━━━━━━━━━━━
+echo ---- Step 4: Pushing to Remote -------------------------
 set SKIP_SONAR=1
 git push -u origin %CURRENT_BRANCH% 2>nul || git push 2>nul || (echo [ERROR] Push failed & exit /b 1)
 echo [OK] Push successful.
 echo.
 
-:: ── Step 4: Create MR ─────────────────────────────────────────────────────────
-echo ━━ Step 4: Merge Request ━━━━━━━━━━━━━━━━━━━━━━━━━━
+:: Step 5: Create MR
+echo ---- Step 5: Merge Request -----------------------------
 set ENCODED_PROJECT=%RESOLVED_PROJECT_PATH:/=%%2F%
 
 for /f "tokens=*" %%r in ('curl -s --header "PRIVATE-TOKEN: %GITLAB_TOKEN%" "%GITLAB_HOST%/api/v4/projects/%ENCODED_PROJECT%/merge_requests?source_branch=%CURRENT_BRANCH%&state=opened" 2^>nul') do set MR_RESPONSE=%%r
@@ -163,21 +183,21 @@ echo %MR_RESPONSE% | find "iid" >nul 2>&1 && (
 ) || (
     echo Creating new merge request...
     for /f "tokens=*" %%t in ('git log -1 --pretty=%%s 2^>nul') do set MR_TITLE=%%t
-
-    powershell -NoProfile -Command ^
-        "$body = @{ source_branch='%CURRENT_BRANCH%'; target_branch='%MAIN_BRANCH%'; title='%MR_TITLE%'; remove_source_branch=$true } | ConvertTo-Json -Compress; ^
-         Invoke-RestMethod -Method POST -Uri '%GITLAB_HOST%/api/v4/projects/%ENCODED_PROJECT%/merge_requests' ^
-           -Headers @{'PRIVATE-TOKEN'='%GITLAB_TOKEN%'} -ContentType 'application/json' -Body $body" >nul 2>&1 && (
+    set MR_CREATED=
+    powershell -NoProfile -Command "$body = @{ source_branch='%CURRENT_BRANCH%'; target_branch='%MAIN_BRANCH%'; title='%MR_TITLE%'; remove_source_branch=$true } | ConvertTo-Json -Compress; Invoke-RestMethod -Method POST -Uri '%GITLAB_HOST%/api/v4/projects/%ENCODED_PROJECT%/merge_requests' -Headers @{'PRIVATE-TOKEN'='%GITLAB_TOKEN%'} -ContentType 'application/json' -Body $body | Out-Null" >nul 2>&1 && (
+        set MR_CREATED=1
+    )
+    if defined MR_CREATED (
         echo [OK] Merge request created.
-    ) || (
+    ) else (
         echo [WARN] Could not create MR automatically.
         echo        Create manually: %GITLAB_HOST%/%RESOLVED_PROJECT_PATH%/-/merge_requests/new
     )
 )
 echo.
 
-:: ── Step 5: Pipeline check (10s wait) ─────────────────────────────────────────
-echo ━━ Step 5: Pipeline ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+:: Step 6: Pipeline check (10s wait)
+echo ---- Step 6: Pipeline ----------------------------------
 echo Waiting 10 seconds for pipeline to initialise...
 timeout /t 10 /nobreak >nul
 
@@ -192,10 +212,10 @@ echo %PIPELINE_RESPONSE% | find "\"id\"" >nul 2>&1 && (
 )
 echo.
 
-:: ── Step 6: SonarQube issues (optional) ───────────────────────────────────────
+:: Step 7: SonarQube issues (optional)
 if defined SONAR_TOKEN (
     if defined RESOLVED_SONAR_KEY (
-        echo ━━ Step 6: SonarQube Issues ━━━━━━━━━━━━━━━━━━━━━━━
+        echo ---- Step 7: SonarQube Issues -------------------
         echo Checking for open issues...
 
         set SONAR_URL=%SONAR_HOST%/api/issues/search?componentKeys=%RESOLVED_SONAR_KEY%^&statuses=OPEN,CONFIRMED^&ps=10^&s=SEVERITY^&asc=false
@@ -211,7 +231,7 @@ if defined SONAR_TOKEN (
     )
 )
 
-echo ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+echo --------------------------------------------------
 echo [OK] Pipeline complete!
 echo.
 echo For the full pipeline with SonarQube auto-fix,

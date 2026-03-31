@@ -1,6 +1,6 @@
 #!/bin/bash
 
-# wac-devflow — MR Creation Debugger
+# devflow-cli — MR Creation Debugger
 # Helps diagnose why MR creation is failing
 
 GITLAB_HOST="${GITLAB_HOST:-https://gitlab.com}"

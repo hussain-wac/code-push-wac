@@ -39,24 +39,28 @@ _detect_git_host() {
 
 # Resolve provider-specific vars
 if [ "$GIT_PROVIDER" = "github" ]; then
-    GIT_TOKEN="${GITHUB_TOKEN:-}"
-    GIT_HOST="${GITHUB_HOST:-$(_detect_git_host)}"
-    GIT_HOST="${GIT_HOST:-https://github.com}"
-    PROJECT_PATH="$(_detect_project_path)"
-    PROJECT_PATH="${PROJECT_PATH:-${GITHUB_PROJECT_PATH:-${GITLAB_PROJECT_PATH:-}}}"
-    MAIN_BRANCH="${MAIN_BRANCH:-main}"
+    export GIT_TOKEN="${GITHUB_TOKEN:-}"
+    export GIT_HOST="${GITHUB_HOST:-$(_detect_git_host)}"
+    export GIT_HOST="${GIT_HOST:-https://github.com}"
+    export PROJECT_PATH="$(_detect_project_path)"
+    export PROJECT_PATH="${PROJECT_PATH:-${GITHUB_PROJECT_PATH:-${GITLAB_PROJECT_PATH:-}}}"
+    export MAIN_BRANCH="${MAIN_BRANCH:-main}"
 else
-    GIT_TOKEN="${GITLAB_TOKEN:-}"
-    GIT_HOST="${GITLAB_HOST:-$(_detect_git_host)}"
-    GIT_HOST="${GIT_HOST:-https://gitlab.com}"
-    PROJECT_PATH="$(_detect_project_path)"
-    PROJECT_PATH="${PROJECT_PATH:-${GITLAB_PROJECT_PATH:-}}"
-    MAIN_BRANCH="${MAIN_BRANCH:-develop}"
+    export GIT_TOKEN="${GITLAB_TOKEN:-}"
+    export GIT_HOST="${GITLAB_HOST:-$(_detect_git_host)}"
+    export GIT_HOST="${GIT_HOST:-https://gitlab.com}"
+    export PROJECT_PATH="$(_detect_project_path)"
+    export PROJECT_PATH="${PROJECT_PATH:-${GITLAB_PROJECT_PATH:-}}"
+    export MAIN_BRANCH="${MAIN_BRANCH:-develop}"
 fi
 
-# ── Load per-project config from .devflow.json (if present) ──────────────────
-_DEVFLOW_JSON="${PROJECT_ROOT:-$(git rev-parse --show-toplevel 2>/dev/null || pwd)}/.devflow.json"
+# ── Load per-project config from .devflow/devflow-project-setting.json ───────
+_PROJECT_ROOT="${PROJECT_ROOT:-$(git rev-parse --show-toplevel 2>/dev/null || pwd)}"
+_DEVFLOW_JSON="${_PROJECT_ROOT}/.devflow/devflow-project-setting.json"
+_LEGACY_DEVFLOW_JSON="${_PROJECT_ROOT}/.devflow.json"
 _PYTHON_EARLY=$(command -v python3 2>/dev/null || command -v python 2>/dev/null || echo "")
+
+[ -f "$_DEVFLOW_JSON" ] || _DEVFLOW_JSON="$_LEGACY_DEVFLOW_JSON"
 
 if [ -f "$_DEVFLOW_JSON" ] && [ -n "$_PYTHON_EARLY" ]; then
     _cfg_branch=$("$_PYTHON_EARLY" -c "import json; d=json.load(open('$_DEVFLOW_JSON')); print(d.get('mainBranch',''))" 2>/dev/null || echo "")
@@ -67,27 +71,29 @@ if [ -f "$_DEVFLOW_JSON" ] && [ -n "$_PYTHON_EARLY" ]; then
     _cfg_run_tests=$("$_PYTHON_EARLY" -c "import json; d=json.load(open('$_DEVFLOW_JSON')); v=d.get('tests',{}).get('runBeforePush',False); print('1' if v else '0')" 2>/dev/null || echo "0")
 
     # Only apply if not already overridden by env or CLI
-    [ -n "$_cfg_branch" ]     && [ -z "${MAIN_BRANCH_OVERRIDE:-}" ] && MAIN_BRANCH="$_cfg_branch"
-    [ -n "$_cfg_sonar" ]      && [ -z "${USE_SONAR:-}" ]            && USE_SONAR="$_cfg_sonar"
-    [ -n "$_cfg_sonar_key" ]  && [ -z "${SONAR_PROJECT_KEY:-}" ]    && SONAR_PROJECT_KEY="$_cfg_sonar_key"
-    [ -n "$_cfg_test_runner" ] && TEST_RUNNER="${TEST_RUNNER:-$_cfg_test_runner}"
-    [ -n "$_cfg_test_cmd" ]    && TEST_COMMAND="${TEST_COMMAND:-$_cfg_test_cmd}"
-    RUN_TESTS_BEFORE_PUSH="${RUN_TESTS_BEFORE_PUSH:-$_cfg_run_tests}"
+    [ -n "$_cfg_branch" ]     && [ -z "${MAIN_BRANCH_OVERRIDE:-}" ] && export MAIN_BRANCH="$_cfg_branch"
+    [ -n "$_cfg_sonar" ]      && [ -z "${USE_SONAR:-}" ]            && export USE_SONAR="$_cfg_sonar"
+    [ -n "$_cfg_sonar_key" ]  && [ -z "${SONAR_PROJECT_KEY:-}" ]    && export SONAR_PROJECT_KEY="$_cfg_sonar_key"
+    [ -n "$_cfg_test_runner" ] && export TEST_RUNNER="${TEST_RUNNER:-$_cfg_test_runner}"
+    [ -n "$_cfg_test_cmd" ]    && export TEST_COMMAND="${TEST_COMMAND:-$_cfg_test_cmd}"
+    export RUN_TESTS_BEFORE_PUSH="${RUN_TESTS_BEFORE_PUSH:-$_cfg_run_tests}"
 fi
 
 # Backward-compat: if USE_SONAR not explicitly set, infer from whether vars exist
 if [ -z "$USE_SONAR" ]; then
     if [ -n "$SONAR_TOKEN" ] && [ -n "$SONAR_PROJECT_KEY" ] && [ -n "$SONAR_HOST" ]; then
-        USE_SONAR="1"
+        export USE_SONAR="1"
     else
-        USE_SONAR="0"
+        export USE_SONAR="0"
     fi
 fi
 
-SONAR_HOST="${SONAR_HOST:-}"
-SONAR_TOKEN="${SONAR_TOKEN:-}"
-PROJECT_KEY="${SONAR_PROJECT_KEY:-}"
+export SONAR_HOST="${SONAR_HOST:-}"
+export SONAR_TOKEN="${SONAR_TOKEN:-}"
+export SONAR_PROJECT_KEY="${SONAR_PROJECT_KEY:-}"
+PROJECT_KEY="$SONAR_PROJECT_KEY"
 MAX_RETRIES="${MAX_RETRIES:-3}"
+DEFAULT_AI_CLI="${DEVFLOW_DEFAULT_AI_CLI:-}"
 
 # Temp files — use TMPDIR for macOS compatibility
 TMPDIR="${TMPDIR:-/tmp}"
@@ -169,6 +175,11 @@ clear_animation_line() {
     printf "\r%-100s\r\n" " " > /dev/tty 2>/dev/null || true
 }
 
+render_live_status() {
+    local message="$1"
+    printf "\r\033[0;36m%s\033[0m" "$message" > /dev/tty 2>/dev/null || true
+}
+
 # ── Script directory ──────────────────────────────────────────────────────────
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
@@ -238,12 +249,21 @@ check_tokens() {
 
 AI_CMD=""
 check_agents() {
-    if command -v claude &> /dev/null; then AI_CMD="claude"; return 0; fi
-    if command -v codex  &> /dev/null; then AI_CMD="codex";  return 0; fi
+    local candidate
+    for candidate in "$DEFAULT_AI_CLI" claude codex gemini; do
+        [ -z "$candidate" ] && continue
+        if command -v "$candidate" &> /dev/null; then
+            AI_CMD="$candidate"
+            return 0
+        fi
+    done
     # Sonar fix requires an AI agent — only fail if sonar is enabled
     if [ "$USE_SONAR" = "1" ]; then
-        echo -e "${YELLOW}⚠  Neither Claude Code nor Codex CLI found — AI auto-fix will be skipped${NC}"
-        echo "  Install Claude Code: https://claude.ai/claude-code"
+        echo -e "${YELLOW}⚠  No supported AI CLI found — AI auto-fix will be skipped${NC}"
+        echo "  Install one of:"
+        echo "    npm install -g @anthropic-ai/claude-code"
+        echo "    npm install -g @openai/codex"
+        echo "    npm install -g @google/gemini-cli"
     fi
 }
 
@@ -349,7 +369,8 @@ check_git_status() {
     return 0
 }
 
-generate_commit_message_with_claude() {
+generate_commit_message_with_ai() {
+    local agent="$1"
     local DIFF_SUMMARY
     DIFF_SUMMARY=$(git diff --cached --stat --color=never 2>/dev/null || git diff --stat --color=never | head -20)
     local CHANGED_FILES
@@ -392,8 +413,6 @@ type(scope): subject line
 
 Optional body paragraph explaining the change.
 
-Co-Authored-By: Claude Sonnet 4.5 <noreply@anthropic.com>
-
 Now generate the commit message for the changes above.
 PROMPT_END
 )
@@ -402,19 +421,32 @@ PROMPT_END
     PROMPT="${PROMPT//DIFF_SUMMARY_PLACEHOLDER/$DIFF_SUMMARY}"
     PROMPT="${PROMPT//DIFF_CONTENT_PLACEHOLDER/$DIFF_CONTENT}"
 
-    local CLAUDE_OUTPUT
+    local AI_OUTPUT
     set +e
-    CLAUDE_OUTPUT=$(printf '%s\n' "$PROMPT" | claude --model haiku --print 2>&1)
-    local CLAUDE_STATUS=$?
+    case "$agent" in
+        claude)
+            AI_OUTPUT=$(printf '%s\n' "$PROMPT" | claude --model haiku --print 2>&1)
+            ;;
+        codex)
+            AI_OUTPUT=$(codex exec "$PROMPT" 2>&1)
+            ;;
+        gemini)
+            AI_OUTPUT=$(gemini -p "$PROMPT" 2>&1)
+            ;;
+        *)
+            AI_OUTPUT=""
+            ;;
+    esac
+    local AI_STATUS=$?
     set -e
 
-    if [ $CLAUDE_STATUS -eq 0 ] && [ -n "$CLAUDE_OUTPUT" ]; then
+    if [ $AI_STATUS -eq 0 ] && [ -n "$AI_OUTPUT" ]; then
         local COMMIT_MSG
-        COMMIT_MSG=$(echo "$CLAUDE_OUTPUT" | \
+        COMMIT_MSG=$(echo "$AI_OUTPUT" | \
             grep -v "^I'll" | grep -v "^I will" | grep -v "^Here" | \
             grep -v "^Based on" | grep -v "^Analyzing" | grep -v "^Generating" | \
-            sed -n '/^[a-z]\+[(:].*$/,/Co-Authored-By.*$/p' | \
-            sed '/^$/N;/^\n$/D')
+            sed -n '/^[a-z]\+[(:].*$/,$p' | \
+            sed '/^$/N;/^\n$/D' | head -20)
 
         if [ -n "$COMMIT_MSG" ]; then
             echo "$COMMIT_MSG"
@@ -478,23 +510,22 @@ EOF
 }
 
 generate_commit_message() {
-    echo -e "${BLUE}Generating commit message with Claude Code (Haiku)...${NC}" >&2
-
-    if command -v claude &> /dev/null; then
+    if [ -n "$AI_CMD" ]; then
+        echo -e "${BLUE}Generating commit message with ${AI_CMD}...${NC}" >&2
         start_spinner "Analyzing changes..."
-        local CLAUDE_MESSAGE
-        CLAUDE_MESSAGE=$(generate_commit_message_with_claude 2>&1)
+        local GENERATED_MESSAGE
+        GENERATED_MESSAGE=$(generate_commit_message_with_ai "$AI_CMD" 2>&1)
         local cm_status=$?
         stop_spinner
 
-        if [ $cm_status -eq 0 ] && [ -n "$CLAUDE_MESSAGE" ]; then
-            echo "$CLAUDE_MESSAGE"
+        if [ $cm_status -eq 0 ] && [ -n "$GENERATED_MESSAGE" ]; then
+            echo "$GENERATED_MESSAGE"
             return 0
         else
-            echo -e "${YELLOW}⚠️  Claude Code generation failed, using fallback method${NC}" >&2
+            echo -e "${YELLOW}⚠️  ${AI_CMD} generation failed, using fallback method${NC}" >&2
         fi
     else
-        echo -e "${YELLOW}⚠️  Claude Code not found, using fallback method${NC}" >&2
+        echo -e "${YELLOW}⚠️  No AI CLI found, using fallback method${NC}" >&2
     fi
 
     generate_commit_message_fallback
@@ -544,6 +575,30 @@ push_to_remote() {
     fi
 
     echo -e "${GREEN}✓ Push successful${NC}"
+}
+
+sync_with_target_branch() {
+    print_step "🔄 Step 3: Syncing with Target Branch"
+
+    local CURRENT_BRANCH
+    CURRENT_BRANCH=$(git rev-parse --abbrev-ref HEAD)
+
+    echo -e "${BLUE}Fetching latest target branch:${NC} ${CYAN}origin/$MAIN_BRANCH${NC}"
+    git fetch origin "$MAIN_BRANCH" || {
+        echo -e "${RED}Failed to fetch origin/$MAIN_BRANCH${NC}"
+        exit 1
+    }
+
+    echo -e "${BLUE}Merging ${CYAN}origin/$MAIN_BRANCH${NC} ${BLUE}into${NC} ${CYAN}$CURRENT_BRANCH${NC}"
+    if git merge --no-edit "origin/$MAIN_BRANCH"; then
+        echo -e "${GREEN}✓ Branch synced with origin/$MAIN_BRANCH${NC}"
+        return 0
+    fi
+
+    echo ""
+    echo -e "${RED}Merge conflict detected while syncing with origin/$MAIN_BRANCH${NC}"
+    echo -e "${YELLOW}Resolve the conflicts manually, commit the resolution if needed, and run ${CYAN}devflow push${NC}${YELLOW} again.${NC}"
+    exit 1
 }
 
 # ── MR / PR creation (GitLab + GitHub) ───────────────────────────────────────
@@ -596,7 +651,7 @@ _gitlab_check_or_create_mr() {
     if [ -n "$PYTHON_CMD" ]; then
         JSON_PAYLOAD=$("$PYTHON_CMD" -c "
 import json
-print(json.dumps({'source_branch':'$CURRENT_BRANCH','target_branch':'$MAIN_BRANCH','title':'''$MR_TITLE''','description':'Generated with wac-devflow','remove_source_branch':True}))
+print(json.dumps({'source_branch':'$CURRENT_BRANCH','target_branch':'$MAIN_BRANCH','title':'''$MR_TITLE''','description':'Generated with devflow-cli','remove_source_branch':True}))
 " 2>/dev/null)
     fi
     [ -z "$JSON_PAYLOAD" ] && \
@@ -661,7 +716,7 @@ _github_check_or_create_pr() {
     if [ -n "$PYTHON_CMD" ]; then
         JSON_PAYLOAD=$("$PYTHON_CMD" -c "
 import json
-print(json.dumps({'title':'''$PR_TITLE''','head':'$CURRENT_BRANCH','base':'$MAIN_BRANCH','body':'Generated with wac-devflow'}))
+print(json.dumps({'title':'''$PR_TITLE''','head':'$CURRENT_BRANCH','base':'$MAIN_BRANCH','body':'Generated with devflow-cli'}))
 " 2>/dev/null)
     fi
     [ -z "$JSON_PAYLOAD" ] && \
@@ -754,8 +809,9 @@ _wait_gitlab_pipeline() {
         PIPELINE_RESPONSE=$(curl -s --header "PRIVATE-TOKEN: $GIT_TOKEN" \
             "$GIT_HOST/api/v4/projects/$ENCODED_PROJECT/pipelines/$PIPELINE_ID")
         PIPELINE_STATUS=$(echo "$PIPELINE_RESPONSE" | grep -o '"status":"[^"]*"' | head -1 | cut -d'"' -f4)
-        echo -e "${BLUE}  Pipeline status: ${CYAN}$PIPELINE_STATUS${NC}"
+        render_live_status "Pipeline status: $PIPELINE_STATUS"
     done
+    printf "\r%-100s\r" " " > /dev/tty 2>/dev/null || true
 
     echo -e "Pipeline finished: ${GREEN}$PIPELINE_STATUS${NC}"
     [ "$PIPELINE_STATUS" = "success" ] && return 0
@@ -818,8 +874,9 @@ except: pass
             "$API_URL/$RUN_ID")
         RUN_STATUS=$(echo "$RUN_RESPONSE" | grep -o '"status":"[^"]*"' | head -1 | cut -d'"' -f4)
         RUN_CONCLUSION=$(echo "$RUN_RESPONSE" | grep -o '"conclusion":"[^"]*"' | head -1 | cut -d'"' -f4)
-        echo -e "${BLUE}  Actions status: ${CYAN}$RUN_STATUS${NC}"
+        render_live_status "Actions status: $RUN_STATUS"
     done
+    printf "\r%-100s\r" " " > /dev/tty 2>/dev/null || true
 
     echo -e "Workflow finished: ${GREEN}$RUN_CONCLUSION${NC}"
     [ "$RUN_CONCLUSION" = "success" ] && return 0
@@ -838,8 +895,14 @@ fetch_sonar_issues() {
 
     [ ! -f "$SONAR_ISSUES_FILE" ] && { echo -e "${RED}Sonar issues file was not generated.${NC}"; return 3; }
 
-    local TOTAL
-    TOTAL=$(grep -o '"total":[0-9]*' "$SONAR_ISSUES_FILE" | head -1 | cut -d':' -f2)
+    local TOTAL=""
+    if [ -n "$PYTHON_CMD" ]; then
+        TOTAL=$("$PYTHON_CMD" -c "import json, sys; d=json.load(open('$SONAR_ISSUES_FILE')); print(d.get('paging', {}).get('total', 0))" 2>/dev/null || echo "")
+    fi
+    if [ -z "$TOTAL" ]; then
+        TOTAL=$(grep -o '"total":[0-9]*' "$SONAR_ISSUES_FILE" | head -1 | cut -d':' -f2)
+    fi
+
     [ -z "$TOTAL" ] || [ "$TOTAL" = "0" ] && return 1
 
     local ISSUES_TEXT
@@ -900,12 +963,16 @@ fix_with_agent() {
 
     if [ -z "$AI_CMD" ]; then
         echo -e "${YELLOW}No AI CLI found. Skipping auto-fix.${NC}"
-        echo "  Install Claude Code: https://claude.ai/claude-code"
+        echo "  Install with npm:"
+        echo "    npm install -g @anthropic-ai/claude-code"
+        echo "    npm install -g @openai/codex"
+        echo "    npm install -g @google/gemini-cli"
         return 1
     fi
 
     local AGENT_LABEL="Claude Code"
     [ "$AI_CMD" = "codex" ] && AGENT_LABEL="Codex"
+    [ "$AI_CMD" = "gemini" ] && AGENT_LABEL="Gemini"
 
     echo -e "${CYAN}╔═══════════════════════════════════════════════════╗${NC}"
     echo -e "${CYAN}║       🤖 $AGENT_LABEL — Live Fix Session         ║${NC}"
@@ -917,7 +984,9 @@ fix_with_agent() {
 
     set +e
     if [ "$AI_CMD" = "codex" ]; then
-        printf '%s\n' "$PROMPT" | codex --full-auto 2>&1 | tee "$OUTPUT_FILE"
+        codex exec --full-auto "$PROMPT" 2>&1 | tee "$OUTPUT_FILE"
+    elif [ "$AI_CMD" = "gemini" ]; then
+        gemini -p "$PROMPT" 2>&1 | tee "$OUTPUT_FILE"
     else
         printf '%s\n' "$PROMPT" | claude --print --dangerously-skip-permissions 2>&1 | tee "$OUTPUT_FILE"
     fi
@@ -981,7 +1050,7 @@ main() {
         echo -e "${BLUE}Tests:     ${CYAN}$TEST_RUNNER${NC}$([ "${RUN_TESTS_BEFORE_PUSH:-0}" = "1" ] && echo " (runs before push)" || echo "")"
     echo ""
 
-    # ── Run tests before push (if configured in .devflow.json) ────────────────
+    # ── Run tests before push (if configured in project settings) ─────────────
     if [ "${RUN_TESTS_BEFORE_PUSH:-0}" = "1" ] && [ -n "${TEST_COMMAND:-}" ]; then
         print_step "🧪 Running tests before push"
         echo -e "${BLUE}  Runner:  ${CYAN}${TEST_RUNNER:-unknown}${NC}"
@@ -1012,9 +1081,11 @@ main() {
 
     if [ $GIT_STATUS -eq 0 ]; then
         stage_and_commit
+        sync_with_target_branch
         push_to_remote
         check_or_create_mr
     elif [ $GIT_STATUS -eq 1 ]; then
+        sync_with_target_branch
         push_to_remote
         check_or_create_mr
     else

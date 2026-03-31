@@ -1,8 +1,8 @@
 #!/bin/bash
 
-# wac-devflow — Project Setup Wizard
+# devflow-cli — Project Setup Wizard
 # Detects project-level settings (test runner, SonarQube, target branch)
-# and saves them to .devflow.json in the project root.
+# and saves them to .devflow/devflow-project-setting.json in the project root.
 # Tokens are NOT stored here — use `devflow setup` for those.
 
 set -e
@@ -13,6 +13,18 @@ sed_inplace() {
         sed -i '' "$@"
     else
         sed -i "$@"
+    fi
+}
+
+normalize_path() {
+    local path="$1"
+    if [[ "$path" =~ ^[A-Za-z]:\\ ]]; then
+        local drive="${path:0:1}"
+        local rest="${path:2}"
+        rest="${rest//\\//}"
+        printf '/%s%s' "$(printf '%s' "$drive" | tr '[:upper:]' '[:lower:]')" "$rest"
+    else
+        printf '%s' "$path"
     fi
 }
 
@@ -62,42 +74,70 @@ ask_value() {
     export "$out_var"="$value"
 }
 
+arrow_select() {
+    local -n _options_ref=$1
+    local current_index=${2:-0}
+    local prompt="${3:-Select an option}"
+    local selected=""
+    local count=${#_options_ref[@]}
+    local i key
+
+    [ "$count" -eq 0 ] && return 1
+
+    while true; do
+        echo -ne "\033[?25l"
+        echo -e "  ${BLUE}${prompt}${NC}"
+        for i in "${!_options_ref[@]}"; do
+            if [ "$i" -eq "$current_index" ]; then
+                echo -e "  ${CYAN}❯ ${_options_ref[$i]}${NC}"
+            else
+                echo -e "    ${_options_ref[$i]}"
+            fi
+        done
+
+        IFS= read -rsn1 key
+        if [[ "$key" == $'\x1b' ]]; then
+            read -rsn2 key
+            case "$key" in
+                '[A') current_index=$(( (current_index - 1 + count) % count )) ;;
+                '[B') current_index=$(( (current_index + 1) % count )) ;;
+            esac
+        elif [[ "$key" == "" || "$key" == $'\n' ]]; then
+            selected="${_options_ref[$current_index]}"
+            printf '\033[%sA' "$((count + 1))"
+            printf '\033[J'
+            echo -ne "\033[?25h"
+            printf '%s\n' "$selected"
+            return 0
+        fi
+
+        printf '\033[%sA' "$((count + 1))"
+        printf '\033[J'
+    done
+}
+
 # Branch selection menu
 ask_branch() {
     local -r out_var="$1"
     local -r default="$2"
-    local branches=("main" "master" "develop" "stage")
-    local choice value i
+    local branches=("main" "master" "develop" "stage" "Other (enter manually)")
+    local value default_index=0 selection i
 
-    echo -e "  ${BLUE}Select target branch for MRs/PRs:${NC}"
-    i=1
-    for b in "${branches[@]}"; do
-        if [ "$b" = "$default" ]; then
-            echo -e "    ${CYAN}$i) $b${NC}  ${DIM}(recommended)${NC}"
-        else
-            echo -e "    $i) $b"
-        fi
-        i=$((i + 1))
+    for i in "${!branches[@]}"; do
+        [ "${branches[$i]}" = "$default" ] && default_index=$i
     done
-    echo -e "    $i) Other (enter manually)"
-    echo ""
 
-    while true; do
-        printf "  Choice [1-%s, default: %s]: " "$i" "$default"
-        read -r choice
-        if [ -z "$choice" ]; then
-            value="$default"; break
-        elif [[ "$choice" =~ ^[0-9]+$ ]] && [ "$choice" -ge 1 ] && [ "$choice" -lt "$i" ]; then
-            value="${branches[$((choice - 1))]}"; break
-        elif [ "$choice" = "$i" ]; then
+    selection=$(arrow_select branches "$default_index" "Use arrow keys and Enter to select the target branch")
+    if [ "$selection" = "Other (enter manually)" ]; then
+        while true; do
             printf "  Enter branch name: "
             read -r value
             [ -n "$value" ] && break
             echo -e "  ${RED}Branch name cannot be empty.${NC}"
-        else
-            echo -e "  ${RED}Invalid choice. Enter a number between 1 and $i.${NC}"
-        fi
-    done
+        done
+    else
+        value="$selection"
+    fi
 
     export "$out_var"="$value"
     echo -e "  ${GREEN}✓ Target branch: ${CYAN}$value${NC}"
@@ -152,10 +192,11 @@ detect_test_command() {
     # If there's a meaningful "test" script in package.json, prefer npm test
     if [ -f "$pkg" ] && [ -n "$PYTHON_CMD" ]; then
         local test_script
-        test_script=$("$PYTHON_CMD" -c "
+        test_script=$(PKG_PATH="$pkg" "$PYTHON_CMD" -c "
 import json, sys
 try:
-    d = json.load(open('$pkg'))
+    with open(__import__('os').environ['PKG_PATH']) as f:
+        d = json.load(f)
     s = d.get('scripts', {}).get('test', '')
     if s and 'no test specified' not in s:
         print('npm test')
@@ -203,18 +244,20 @@ clear
 echo ""
 echo -e "${CYAN}  ╔════════════════════════════════════════════════════╗${NC}"
 echo -e "${CYAN}  ║                                                    ║${NC}"
-echo -e "${CYAN}  ║   🛠   wac-devflow — Project Setup               ║${NC}"
+echo -e "${CYAN}  ║   🛠   devflow-cli — Project Setup              ║${NC}"
 echo -e "${CYAN}  ║                                                    ║${NC}"
 echo -e "${CYAN}  ╚════════════════════════════════════════════════════╝${NC}"
 echo ""
-echo -e "  Saves project config to ${CYAN}.devflow.json${NC} — safe to commit."
+echo -e "  Saves project config to ${CYAN}.devflow/devflow-project-setting.json${NC} — safe to commit."
 echo -e "  ${DIM}For tokens & credentials, run: devflow setup${NC}"
 echo ""
 
 # ── Resolve project root ──────────────────────────────────────────────────────
-PROJECT_ROOT="${PROJECT_ROOT:-$(git rev-parse --show-toplevel 2>/dev/null || pwd)}"
+PROJECT_ROOT="$(normalize_path "${PROJECT_ROOT:-$(git rev-parse --show-toplevel 2>/dev/null || pwd)}")"
 cd "$PROJECT_ROOT" 2>/dev/null || true
-CONFIG_FILE="$PROJECT_ROOT/.devflow.json"
+CONFIG_DIR="$PROJECT_ROOT/.devflow"
+CONFIG_FILE="$CONFIG_DIR/devflow-project-setting.json"
+LEGACY_CONFIG_FILE="$PROJECT_ROOT/.devflow.json"
 
 echo -e "  ${BLUE}Project root:${NC} ${CYAN}$PROJECT_ROOT${NC}"
 
@@ -226,15 +269,19 @@ EXISTING_TEST_RUNNER=""
 EXISTING_TEST_COMMAND=""
 EXISTING_RUN_BEFORE_PUSH=""
 
+if [ ! -f "$CONFIG_FILE" ] && [ -f "$LEGACY_CONFIG_FILE" ]; then
+    CONFIG_FILE="$LEGACY_CONFIG_FILE"
+fi
+
 if [ -f "$CONFIG_FILE" ] && [ -n "$PYTHON_CMD" ]; then
-    echo -e "  ${GREEN}✓ Existing .devflow.json found${NC}"
+    echo -e "  ${GREEN}✓ Existing project settings found: ${CYAN}${CONFIG_FILE#$PROJECT_ROOT/}${NC}"
     echo ""
-    EXISTING_MAIN_BRANCH=$("$PYTHON_CMD" -c "import json; d=json.load(open('$CONFIG_FILE')); print(d.get('mainBranch',''))" 2>/dev/null || echo "")
-    EXISTING_SONAR_ENABLED=$("$PYTHON_CMD" -c "import json; d=json.load(open('$CONFIG_FILE')); v=d.get('sonar',{}).get('enabled',''); print('true' if v==True else ('false' if v==False else ''))" 2>/dev/null || echo "")
-    EXISTING_SONAR_PROJECT_KEY=$("$PYTHON_CMD" -c "import json; d=json.load(open('$CONFIG_FILE')); print(d.get('sonar',{}).get('projectKey',''))" 2>/dev/null || echo "")
-    EXISTING_TEST_RUNNER=$("$PYTHON_CMD" -c "import json; d=json.load(open('$CONFIG_FILE')); print(d.get('tests',{}).get('runner',''))" 2>/dev/null || echo "")
-    EXISTING_TEST_COMMAND=$("$PYTHON_CMD" -c "import json; d=json.load(open('$CONFIG_FILE')); print(d.get('tests',{}).get('command',''))" 2>/dev/null || echo "")
-    EXISTING_RUN_BEFORE_PUSH=$("$PYTHON_CMD" -c "import json; d=json.load(open('$CONFIG_FILE')); v=d.get('tests',{}).get('runBeforePush',''); print('true' if v==True else 'false')" 2>/dev/null || echo "")
+    EXISTING_MAIN_BRANCH=$(CONFIG_PATH="$CONFIG_FILE" "$PYTHON_CMD" -c "import json, os; d=json.load(open(os.environ['CONFIG_PATH'])); print(d.get('mainBranch',''))" 2>/dev/null || echo "")
+    EXISTING_SONAR_ENABLED=$(CONFIG_PATH="$CONFIG_FILE" "$PYTHON_CMD" -c "import json, os; d=json.load(open(os.environ['CONFIG_PATH'])); v=d.get('sonar',{}).get('enabled',''); print('true' if v==True else ('false' if v==False else ''))" 2>/dev/null || echo "")
+    EXISTING_SONAR_PROJECT_KEY=$(CONFIG_PATH="$CONFIG_FILE" "$PYTHON_CMD" -c "import json, os; d=json.load(open(os.environ['CONFIG_PATH'])); print(d.get('sonar',{}).get('projectKey',''))" 2>/dev/null || echo "")
+    EXISTING_TEST_RUNNER=$(CONFIG_PATH="$CONFIG_FILE" "$PYTHON_CMD" -c "import json, os; d=json.load(open(os.environ['CONFIG_PATH'])); print(d.get('tests',{}).get('runner',''))" 2>/dev/null || echo "")
+    EXISTING_TEST_COMMAND=$(CONFIG_PATH="$CONFIG_FILE" "$PYTHON_CMD" -c "import json, os; d=json.load(open(os.environ['CONFIG_PATH'])); print(d.get('tests',{}).get('command',''))" 2>/dev/null || echo "")
+    EXISTING_RUN_BEFORE_PUSH=$(CONFIG_PATH="$CONFIG_FILE" "$PYTHON_CMD" -c "import json, os; d=json.load(open(os.environ['CONFIG_PATH'])); v=d.get('tests',{}).get('runBeforePush',''); print('true' if v==True else 'false')" 2>/dev/null || echo "")
 
     [ -n "$EXISTING_MAIN_BRANCH" ]       && echo -e "    mainBranch          = ${CYAN}$EXISTING_MAIN_BRANCH${NC}"
     [ -n "$EXISTING_SONAR_ENABLED" ]     && echo -e "    sonar.enabled       = ${CYAN}$EXISTING_SONAR_ENABLED${NC}"
@@ -325,7 +372,17 @@ if [ "$FINAL_SONAR_ENABLED" = "true" ]; then
     _REMOTE_PATH=$(git remote get-url origin 2>/dev/null | sed 's|\.git$||; s|.*[:/]||; s|.*/\(.*\)|\1|' || echo "")
     _SUGGESTED_KEY=$(git remote get-url origin 2>/dev/null | sed 's|\.git$||' | grep -o '[^/:]*\/[^/:]*$' | sed 's|/|_|g; s|-|_|g' | tr '[:upper:]' '[:lower:]' || echo "")
 
+    # Try to extract from file if not already set
+    _FILE_KEY=""
+    if [ -f "$PROJECT_ROOT/sonar-project.properties" ]; then
+        _FILE_KEY=$(grep "^sonar.projectKey=" "$PROJECT_ROOT/sonar-project.properties" | cut -d'=' -f2)
+    elif [ -f "$PROJECT_ROOT/.sonarcloud.properties" ]; then
+        _FILE_KEY=$(grep "^sonar.projectKey=" "$PROJECT_ROOT/.sonarcloud.properties" | cut -d'=' -f2)
+    fi
+
     FINAL_SONAR_PROJECT_KEY="${EXISTING_SONAR_PROJECT_KEY:-${SONAR_PROJECT_KEY:-}}"
+    [ -z "$FINAL_SONAR_PROJECT_KEY" ] && [ -n "$_FILE_KEY" ] && FINAL_SONAR_PROJECT_KEY="$_FILE_KEY"
+
     if [ -n "$FINAL_SONAR_PROJECT_KEY" ]; then
         echo -e "  ${GREEN}✓ SonarQube project key: ${CYAN}$FINAL_SONAR_PROJECT_KEY${NC}"
         if ask_yes_no "  Change project key? (y/N):"; then
@@ -362,23 +419,7 @@ if [ -n "$DETECTED_RUNNER" ]; then
 fi
 
 if [ -z "$FINAL_TEST_RUNNER" ]; then
-    echo -e "  ${BLUE}Select test runner:${NC}"
-    local_i=1
-    for r in "${TEST_RUNNERS[@]}"; do
-        echo -e "    $local_i) $r"
-        local_i=$((local_i + 1))
-    done
-    echo ""
-
-    while true; do
-        printf "  Choice [1-%s]: " "${#TEST_RUNNERS[@]}"
-        read -r choice
-        if [[ "$choice" =~ ^[0-9]+$ ]] && [ "$choice" -ge 1 ] && [ "$choice" -le "${#TEST_RUNNERS[@]}" ]; then
-            FINAL_TEST_RUNNER="${TEST_RUNNERS[$((choice - 1))]}"
-            break
-        fi
-        echo -e "  ${RED}Invalid choice.${NC}"
-    done
+    FINAL_TEST_RUNNER=$(arrow_select TEST_RUNNERS 0 "Use arrow keys and Enter to select the test runner")
 
     if [ "$FINAL_TEST_RUNNER" = "none" ]; then
         FINAL_TEST_RUNNER=""
@@ -402,27 +443,38 @@ if [ -n "$FINAL_TEST_RUNNER" ] && [ "$FINAL_TEST_RUNNER" != "none" ]; then
     fi
 fi
 
-# ── Step 4: Write .devflow.json ───────────────────────────────────────────────
-print_step "Step 4 — Saving .devflow.json"
+# ── Step 4: Write project settings ────────────────────────────────────────────
+print_step "Step 4 — Saving project settings"
+
+mkdir -p "$CONFIG_DIR"
+CONFIG_FILE="$CONFIG_DIR/devflow-project-setting.json"
 
 # Build JSON with python if available, else manual string
 if [ -n "$PYTHON_CMD" ]; then
+    CONFIG_PATH="$CONFIG_FILE" \
+    FINAL_MAIN_BRANCH="$FINAL_MAIN_BRANCH" \
+    FINAL_SONAR_ENABLED="$FINAL_SONAR_ENABLED" \
+    FINAL_SONAR_PROJECT_KEY="$FINAL_SONAR_PROJECT_KEY" \
+    FINAL_TEST_RUNNER="$FINAL_TEST_RUNNER" \
+    FINAL_TEST_COMMAND="$FINAL_TEST_COMMAND" \
+    FINAL_RUN_BEFORE_PUSH="$FINAL_RUN_BEFORE_PUSH" \
     "$PYTHON_CMD" -c "
 import json
+import os
 
 cfg = {
-    'mainBranch': '$FINAL_MAIN_BRANCH',
+    'mainBranch': os.environ['FINAL_MAIN_BRANCH'],
     'sonar': {
-        'enabled': $([ '$FINAL_SONAR_ENABLED' = 'true' ] && echo 'True' || echo 'False'),
-        'projectKey': '$FINAL_SONAR_PROJECT_KEY'
+        'enabled': os.environ['FINAL_SONAR_ENABLED'] == 'true',
+        'projectKey': os.environ['FINAL_SONAR_PROJECT_KEY']
     },
     'tests': {
-        'runner': '$FINAL_TEST_RUNNER',
-        'command': '$FINAL_TEST_COMMAND',
-        'runBeforePush': $([ '$FINAL_RUN_BEFORE_PUSH' = 'true' ] && echo 'True' || echo 'False')
+        'runner': os.environ['FINAL_TEST_RUNNER'],
+        'command': os.environ['FINAL_TEST_COMMAND'],
+        'runBeforePush': os.environ['FINAL_RUN_BEFORE_PUSH'] == 'true'
     }
 }
-with open('$CONFIG_FILE', 'w') as f:
+with open(os.environ['CONFIG_PATH'], 'w') as f:
     json.dump(cfg, f, indent=2)
     f.write('\n')
 print('ok')
@@ -453,14 +505,16 @@ echo ""
 
 # ── Offer to gitignore (only if sensitive — it's not, so offer to commit) ─────
 if [ -f "$PROJECT_ROOT/.gitignore" ]; then
-    if grep -q "\.devflow\.json" "$PROJECT_ROOT/.gitignore" 2>/dev/null; then
-        echo -e "  ${YELLOW}Note:${NC} .devflow.json is currently in .gitignore"
+    if grep -Eq '(^|/)\.devflow/?($|/)|\.devflow\.json' "$PROJECT_ROOT/.gitignore" 2>/dev/null; then
+        echo -e "  ${YELLOW}Note:${NC} devflow project settings are currently ignored by git"
         if ask_yes_no "  Remove from .gitignore so it can be committed? (y/N):"; then
             sed_inplace '/\.devflow\.json/d' "$PROJECT_ROOT/.gitignore"
+            sed_inplace '/^\.devflow\/$/d' "$PROJECT_ROOT/.gitignore"
+            sed_inplace '/^\.devflow$/d' "$PROJECT_ROOT/.gitignore"
             echo -e "  ${GREEN}✓ Removed from .gitignore${NC}"
         fi
     else
-        echo -e "  ${DIM}Tip: .devflow.json contains no secrets — safe to commit to git.${NC}"
+        echo -e "  ${DIM}Tip: .devflow/devflow-project-setting.json contains no secrets — safe to commit to git.${NC}"
     fi
 fi
 
@@ -485,5 +539,5 @@ echo ""
 echo -e "  Next steps:"
 echo -e "    ${CYAN}devflow push${NC}     — run the pipeline (picks up new config)"
 echo -e "    ${CYAN}devflow check${NC}    — verify full environment"
-echo -e "    ${CYAN}git add .devflow.json && git commit${NC}  — commit project config"
+echo -e "    ${CYAN}git add .devflow/devflow-project-setting.json && git commit${NC}  — commit project config"
 echo ""

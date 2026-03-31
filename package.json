@@ -1,6 +1,6 @@
 {
   "name": "wac-devflow",
-  "version": "1.1.9",
+  "version": "1.1.27",
   "description": "Automated GitLab pipeline with SonarQube AI auto-fix and conventional commit messages",
   "bin": {
     "devflow": "bin/cli.js"
@@ -16,6 +16,9 @@
   "engines": {
     "node": ">=16"
   },
+  "publishConfig": {
+    "access": "public"
+  },
   "keywords": [
     "gitlab",
     "sonarqube",
@@ -25,10 +28,13 @@
     "conventional-commits",
     "code-quality"
   ],
-  "author": "WAC",
+  "author": "Devflow Contributors",
   "license": "MIT",
   "repository": {
-    "type": "git",
-    "url": "git+https://github.com/hussain-wac/code-push-wac.git"
+    "type": "git"
+  },
+  "main": "index.js",
+  "directories": {
+    "lib": "lib"
   }
 }
