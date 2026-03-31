@@ -151,12 +151,48 @@ echo "  Project: $PROJECT_KEY"
 echo ""
 
 # ── Fetch from API ────────────────────────────────────────────────────────────
-ISSUES_RESPONSE=$(curl -sS -L -u "$SONAR_TOKEN:" "$ISSUES_URL")
+fetch_issues() {
+    local url="$1"
+    local response=$(curl -sS -L -u "$SONAR_TOKEN:" "$url")
+    echo "$response"
+}
+
+ISSUES_RESPONSE=$(fetch_issues "$ISSUES_URL")
 
 if [ $? -ne 0 ] || [ -z "$ISSUES_RESPONSE" ]; then
     echo -e "${RED}Error: Failed to connect to SonarQube at $SONAR_HOST${NC}"
     echo "  Check your VPN or SONAR_HOST reachability."
     exit 1
+fi
+
+# Parse total issues robustly
+get_total() {
+    local resp="$1"
+    if [ -n "$_PYTHON_EARLY" ]; then
+        "$_PYTHON_EARLY" -c "import json, sys; d=json.load(sys.stdin); print(d.get('paging', {}).get('total', d.get('total', 0)))" <<< "$resp" 2>/dev/null || echo "0"
+    else
+        echo "$resp" | grep -o '"total":[0-9]*' | head -1 | cut -d':' -f2 || echo "0"
+    fi
+}
+
+TOTAL_ISSUES=$(get_total "$ISSUES_RESPONSE")
+
+# ── Smart Fallback ───────────────────────────────────────────────────────────
+# If branch fetch returns 0, try fetching overall project issues
+if { [ -z "$TOTAL_ISSUES" ] || [ "$TOTAL_ISSUES" = "0" ]; } && [ -n "$FINAL_BRANCH" ]; then
+    echo -e "${YELLOW}No issues found for branch '$FINAL_BRANCH'. Checking overall project...${NC}"
+    
+    # URL without branch parameter
+    OVERALL_URL="$SONAR_HOST/api/issues/search?componentKeys=$ENCODED_PROJECT&resolved=false&ps=500&s=SEVERITY&asc=false"
+    FALLBACK_RESPONSE=$(fetch_issues "$OVERALL_URL")
+    FALLBACK_TOTAL=$(get_total "$FALLBACK_RESPONSE")
+    
+    if [ -n "$FALLBACK_TOTAL" ] && [ "$FALLBACK_TOTAL" != "0" ]; then
+        ISSUES_RESPONSE="$FALLBACK_RESPONSE"
+        TOTAL_ISSUES="$FALLBACK_TOTAL"
+        ISSUES_URL="$OVERALL_URL"
+        echo -e "${GREEN}✓ Found $TOTAL_ISSUES issues in the overall project.${NC}"
+    fi
 fi
 
 ERROR_MSG=$(echo "$ISSUES_RESPONSE" | grep -o '"errors":\[.*\]' 2>/dev/null || true)
